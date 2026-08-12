@@ -1,3 +1,19 @@
+# [0.3.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.2.0...v0.3.0) (2026-08-12)
+
+
+### Bug Fixes
+
+* bound every raster value against the field that carries it ([decb1ca](https://github.com/Fuse-Technical-Group/pyst2110/commit/decb1ca78a3d484e0bec8f4ec1d634ed8afe248b))
+* **sdp:** validate every value an offer writes, and write what was validated ([b66cc9f](https://github.com/Fuse-Technical-Group/pyst2110/commit/b66cc9f3ef27b163c4d757f58fd883b7e1cfe97d))
+* **transmit:** refuse a raster with no rows by name ([878c915](https://github.com/Fuse-Technical-Group/pyst2110/commit/878c9153ee743f4671508a1aa51c882f559b5cae))
+* **transmit:** size a payload against the UDP limit rather than past it ([f0d0ae6](https://github.com/Fuse-Technical-Group/pyst2110/commit/f0d0ae63e7c69bcf456841daf46b36918332e33b))
+
+
+### Features
+
+* **sdp:** write an SDP offer describing a flow and its video format ([84c096f](https://github.com/Fuse-Technical-Group/pyst2110/commit/84c096fa7326caa9d37536bde5690a4ab621e236))
+* **transmit:** build a frame's headers once and stamp them per frame ([706918e](https://github.com/Fuse-Technical-Group/pyst2110/commit/706918e9ce6a0e7867b00262825939fa659f02c2))
+
 # 0.2.0 (2026-08-12)
 
 The ST 2110-20 receive path.
