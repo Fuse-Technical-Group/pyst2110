@@ -31,11 +31,17 @@ one consumer's use behind it.
   `src/pyst2110/sdp.py` refuses it twice over, in `int()` on the way in and
   against the depths it permits on the way out, so it needs a depth that is
   not an integer as much as a table entry.
-- **sdp-clock-attributes**: a conformant ST 2110-10 SDP carries
-  `a=ts-refclk:` and `a=mediaclk:`, and `format_sdp` writes neither
-  (`src/pyst2110/sdp.py`). They name a PTP grandmaster and a media clock
-  this library has no model of, so a caller that owns the clock appends
-  them. Worth taking on once something here knows what the clock is.
+- **sdp-clock-attributes**: the one known ST 2110-10 non-conformance in
+  the emitted offer. Section 8.2 — "All stream descriptions shall have a
+  `ts-refclk` attribute" — and section 8.3 — "All stream descriptions
+  shall have a media-level `mediaclk` attribute" — and `format_sdp`
+  writes neither (`src/pyst2110/sdp.py`). Both name something this
+  library has no model of: a PTP grandmaster's clock identity and domain,
+  and whether the media clock is locked to it (`mediaclk:direct=0`) or
+  free-running (`mediaclk:sender`). Neither is derivable from a frame
+  index, so a caller that owns the clock appends them. Worth taking on
+  once something here knows what the clock is. A receiver that enforces
+  ST 2110-21 section 7.2.3 refuses an offer without them.
 - **transmit-block-packing**: `FrameHeaders` writes one SRD header a
   packet, which is ST 2110-20's General Packing Mode
   (`src/pyst2110/transmit.py`). The Block Packing Mode of section 6.3.3

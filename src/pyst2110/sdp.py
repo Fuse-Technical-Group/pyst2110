@@ -5,6 +5,9 @@ ST 2110-20's ``a=fmtp:`` to size the frame a transmitter is about to pace
 (SPEC §spec:sdp). Both directions: a receiver reads an SDP it is handed, and
 a transmitter is configured by one it produces.
 
+An offer carries the required media type parameters of two documents:
+ST 2110-20 section 7.2 and the ``TP`` of ST 2110-21 section 8.1.
+
 Colorimetry is carried through, not interpreted: what a consumer does with
 ``BT2020`` is its own concern, and this records which token the SDP said.
 """

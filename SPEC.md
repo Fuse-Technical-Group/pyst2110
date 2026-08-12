@@ -222,6 +222,13 @@ address, media port, source filter — and its video format: width, height,
 frame rate, sampling, depth, colorimetry, interlace, and the sender's
 maximum UDP size.
 
+A sender's required parameters are not one document's. ST 2110-20 section
+7.2 requires eight; ST 2110-21 section 8.1 adds `TP` for every video RTP
+stream. A conformance review of ST 2110-20 section 7 does not meet the
+ninth, which is how the offer came to go out without it — and why the test
+asserts the union the two standards require rather than the set a reviewer
+read.
+
 Parsing and emitting are both here, because a receiver reads an SDP it is
 handed and a transmitter is configured by one it produces. The video format
 it yields is what §spec:geometry computes from.
@@ -234,10 +241,41 @@ A parameter whose absence carries meaning is written only where it differs
 from that meaning. An absent `MAXUDP` *is* the standard limit, so writing
 the default would claim a limit was negotiated when none was.
 
-The ST 2110-10 clock attributes are not written. They name a PTP
-grandmaster and a media clock this library has no model of, and a
-synchronisation claimed but not held is worse than one left to the caller
-that owns it (§road:future).
+`TP` describes the pacing of whatever puts the packets on the wire, and
+that is not this library — nothing here paces a packet
+(§spec:scope-boundary). So it is a caller's parameter, and the caller that
+owns the pacer owns the value. The default is Narrow, on three grounds.
+It is the safer of the two narrow claims: section 7.1.2's network
+compatibility model divides by `43200 × R_ACTIVE × T_FRAME` where Narrow
+Linear's divides by `43200 × T_FRAME`, so with `R_ACTIVE` below one Narrow
+permits the larger `C_MAX` — and a sender that declares more burst than it
+produces is carried by a network provisioned for it, where one that
+declares less is the one whose packets a switch drops. Section 7.1.2's own
+note calls a sender that packs full standard-sized packets from a locked
+and phased signal and sends them as they fill compliant to the type, which
+is what a hardware pacer fed by §spec:transmit-headers is. And a Narrow
+receiver *should* accept a Narrow Linear sender (section 7.2.3), so of the
+two it is Narrow Linear that a receiver treats as the extra. Wide is a
+value and not the default: it exists for senders whose pacing software
+decides, and claiming ninety times the receiver buffer a hardware pacer
+needs misdescribes the sender as surely as claiming too little.
+
+A multicast offer says who may send, and says so deliberately.
+ST 2110-10 section 8.4 asks a sender to signal `a=source-filter`, and
+RFC 4570 makes the line's absence mean the group accepts every sender —
+a real any-source-multicast session, so the line is not made
+unconditional. What was wrong was that omission was the default: a caller
+who forgot looked exactly like one who meant it, and the difference
+surfaced as a transmit SDK's refusal rather than as an error here. A
+multicast offer now names a sender or declares any-source; neither and
+both raise. A unicast destination has no group to filter and needs
+neither.
+
+The ST 2110-10 clock attributes are not written, and sections 8.2 and 8.3
+make them *shall* — this is a known gap in ST 2110-10 conformance, not an
+optional parameter declined. They name a PTP grandmaster and a media clock
+this library has no model of, and a synchronisation claimed but not held
+is worse than one left to the caller that owns it (§road:future).
 
 Every value a caller supplies is validated before it is written, an SDP
 being line-structured. The bound is not CRLF but every character a line
@@ -250,9 +288,11 @@ identifier, which accepts nearly any character and names an interface no
 peer shares, is refused rather than stripped. Integers are checked as
 integers: a dataclass annotation is a promise, not a check.
 
-A source filter names one address type for two addresses. RFC 4570 allows
-the wildcard where they differ in family, which is what a v4 destination
-filtering a v6 sender gets.
+A source filter names one address type for two addresses. RFC 4570 permits
+the wildcard that would cover two only where the destination is an FQDN,
+and this emitter writes IP literals — so a v4 group filtering a v6 sender
+has no spelling. It also describes no flow, that sender reaching that
+group with nothing, and is refused where it is built.
 
 ## Transmit headers §spec:transmit-headers
 

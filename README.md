@@ -67,6 +67,13 @@ for index in range(frames):
 offer = format_sdp(flow, video)    # the SDP describing what was just sent
 ```
 
+The offer carries the media type parameters ST 2110-20 section 7.2 and
+ST 2110-21 section 8.1 require of a sender. `TP` describes the pacing,
+which is the transport's and not this library's, so `sender_type=` is
+the caller's to set — it defaults to `2110TPN`. A multicast `flow` names
+its sender or passes `any_source=True`; see §spec:sdp for why that is a
+choice rather than a default.
+
 `frame_offset_octets` says which octets of the frame buffer each packet
 carries. Moving them is the consumer's, as on the receive side.
 

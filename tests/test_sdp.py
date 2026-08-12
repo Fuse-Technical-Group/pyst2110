@@ -1,9 +1,10 @@
 """Reading and writing a flow and a video format as an SDP (SPEC §spec:sdp).
 
-Vectors are written by hand from RFC 4566 and ST 2110-20, not round-tripped
-through a writer of ours. The round trip is checked too, as the additional
-property it is: it proves the pair agree with each other, and the fixed
-vectors are what tie either of them to the documents (§spec:testing).
+Vectors are written by hand from RFC 4566, RFC 4570, ST 2110-10, ST 2110-20
+and ST 2110-21, not round-tripped through a writer of ours. The round trip is
+checked too, as the additional property it is: it proves the pair agree with
+each other, and the fixed vectors are what tie either of them to the
+documents (§spec:testing).
 """
 
 from __future__ import annotations
