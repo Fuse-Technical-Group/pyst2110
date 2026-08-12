@@ -15,6 +15,8 @@ import ipaddress
 from dataclasses import dataclass
 from fractions import Fraction
 
+from pyst2110 import _layout
+
 __all__ = [
     "RTP_CLOCK_RATE",
     "STANDARD_UDP_SIZE_LIMIT",
@@ -54,15 +56,15 @@ _UNSPECIFIED = "UNSPECIFIED"
 
 # ST 2110-20 section 7.2: width and height are "integers between 1 and 32767
 # inclusive" — which is also all the SRD Row Number and Offset fields hold.
-_MAX_RASTER = 32767
-_MAX_PORT = 65535
+_MAX_RASTER = _layout.VALUE_MASK
+# A UDP port and a UDP datagram's length are both sixteen-bit fields, so no
+# port or MAXUDP above this describes one that can exist.
+_MAX_PORT = _layout.U16_MODULUS - 1
+_MAX_UDP_SIZE = _layout.U16_MODULUS - 1
 # RFC 3550 section 5.1 gives the payload type seven bits.
-_MAX_PAYLOAD_TYPE = 127
-_DEFAULT_PAYLOAD_TYPE = 96
+_MAX_PAYLOAD_TYPE = _layout.PAYLOAD_TYPE_MASK
+_DEFAULT_PAYLOAD_TYPE = _layout.DYNAMIC_PAYLOAD_TYPE
 _MAX_TTL = 255
-# A UDP datagram's own length field is sixteen bits, so no MAXUDP above this
-# describes a datagram that can exist.
-_MAX_UDP_SIZE = 65535
 # RFC 4566 section 5.2 wants the session id "based on a 64-bit NTP timestamp".
 _MAX_SESSION_ID = (1 << 64) - 1
 # ST 2110-20 section 7.4.2 lists the depths a sender may declare. 16f is
@@ -308,7 +310,7 @@ def format_sdp(
     destination = _address(flow.destination_ip, "destination")
     origin = _address(flow.source_ip, "source") if flow.source_ip else None
     _integer(flow.destination_port, "port", 1, _MAX_PORT)
-    _integer(payload_type, "payload type", 0, _MAX_PAYLOAD_TYPE)
+    validate_payload_type(payload_type)
     _integer(ttl, "TTL", 0, _MAX_TTL)
     _integer(session_id, "session id", 0, _MAX_SESSION_ID)
     if _LINE_TERMINATORS.intersection(session_name):
@@ -403,6 +405,16 @@ def _token(value: str, name: str) -> None:
     """
     if not value or any(character.isspace() for character in value):
         raise ValueError(f"{name}={value!r} is not a single ST 2110-20 token")
+
+
+def validate_payload_type(value: int) -> None:
+    """Refuse an RTP payload type outside its seven bits (RFC 3550 §5.1).
+
+    Package-internal, and shared with :mod:`pyst2110.transmit`: the offer and
+    the headers describe one flow, and two copies of one bound are two
+    chances to disagree about it.
+    """
+    _integer(value, "payload type", 0, _MAX_PAYLOAD_TYPE)
 
 
 def _integer(value: object, name: str, low: int, high: int) -> None:

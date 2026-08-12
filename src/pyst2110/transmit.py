@@ -20,6 +20,7 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
+from pyst2110 import _layout
 from pyst2110.geometry import (
     line_bytes,
     packets_per_frame,
@@ -27,43 +28,31 @@ from pyst2110.geometry import (
     pgroup,
     rows_per_field,
 )
-from pyst2110.sdp import RTP_CLOCK_RATE, SdpVideo
+from pyst2110.sdp import RTP_CLOCK_RATE, SdpVideo, validate_payload_type
 
 __all__ = ["PACKET_HEADER_SIZE", "UDP_HEADER_SIZE", "FrameHeaders", "max_payload_size"]
 
 #: Octets of header a packet carries: the twelve of RFC 3550's fixed header,
 #: two of extended sequence number, and one six-octet SRD header.
-PACKET_HEADER_SIZE = 20
+PACKET_HEADER_SIZE = (
+    _layout.FIXED_HEADER_SIZE + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE
+)
 
 #: The UDP header, which SMPTE ST 2110-10 section 6.3 counts inside its size
 #: limit: "The UDP Size is reflected in the UDP header, and includes the length
 #: of the UDP header (8 octets) and also the RTP headers and data."
 UDP_HEADER_SIZE = 8
 
-_RTP_SEQUENCE = 2
-_RTP_TIMESTAMP = 4
-_RTP_SSRC = 8
-_EXTENDED_SEQUENCE = 12
-_SRD_LENGTH = 14
-_SRD_ROW = 16
-_SRD_OFFSET = 18
+# Packet-relative positions, derived rather than restated: the extended
+# sequence number sits directly after the fixed header and the one SRD header
+# after that, and the SRD's own fields are offset from _SRD_BASE.
+_EXTENDED_SEQUENCE = _layout.FIXED_HEADER_SIZE
+_SRD_BASE = _EXTENDED_SEQUENCE + _layout.EXTENDED_SEQUENCE_SIZE
 
-# Byte 0: V=2, P=0, X=0, CC=0. ST 2110-20 section 6.1.2 provides for an
-# extension but requires none, and this builds none.
-_VERSION_2 = 0x80
-_MARKER = 0x80
-# The F bit tops the row word; the C bit tops the offset word.
-_FIELD = 0x8000
-
-_SEQUENCE_MODULUS = 1 << 32
-_TIMESTAMP_MODULUS = 1 << 32
-_MAX_PAYLOAD_TYPE = 127
-# ST 2110-20 section 7.2 bounds width and height at 32767, which is also all
-# the fifteen bits the SRD Row Number and Offset fields leave under their own
-# flag hold. Past either, the value overflows into the F or the C bit.
-_MAX_RASTER = 0x7FFF
-# RFC 4175 section 4.2 gives the SRD Length sixteen bits, with no flag above it.
-_MAX_SRD_LENGTH = 0xFFFF
+# ST 2110-20 section 7.2 bounds width and height at 32767, which is what the
+# SRD Row Number and Offset fields hold under their own flag.
+_MAX_RASTER = _layout.VALUE_MASK
+_MAX_SRD_LENGTH = _layout.U16_MODULUS - 1
 # The derivation in stamp() runs in numpy's int64, which overflows rather than
 # wrapping. An index past what it holds is refused by name instead.
 _INT64_MAX = (1 << 63) - 1
@@ -119,7 +108,7 @@ class FrameHeaders:
         video: SdpVideo,
         payload_size: int,
         *,
-        payload_type: int = 96,
+        payload_type: int = _layout.DYNAMIC_PAYLOAD_TYPE,
         ssrc: int = 0,
         initial_sequence: int = 0,
     ) -> None:
@@ -159,11 +148,10 @@ class FrameHeaders:
                 f"the {video.max_udp} this flow declares; size it with "
                 f"choose_payload_size(video, max_payload_size(video))"
             )
-        if not 0 <= payload_type <= _MAX_PAYLOAD_TYPE:
-            raise ValueError(f"{payload_type} is not a 7-bit RTP payload type")
-        if not 0 <= ssrc < _SEQUENCE_MODULUS:
+        validate_payload_type(payload_type)
+        if not 0 <= ssrc < _layout.U32_MODULUS:
             raise ValueError(f"{ssrc} is not a 32-bit SSRC")
-        if not 0 <= initial_sequence < _SEQUENCE_MODULUS:
+        if not 0 <= initial_sequence < _layout.U32_MODULUS:
             raise ValueError(f"{initial_sequence} is not a 32-bit sequence number")
         if video.height <= 0:
             raise ValueError(f"a height of {video.height} is not an image")
@@ -213,12 +201,20 @@ class FrameHeaders:
         marker[-1] = True
 
         block = np.zeros((self.packets, PACKET_HEADER_SIZE), dtype=np.uint8)
-        block[:, 0] = _VERSION_2
-        block[:, 1] = np.where(marker, _MARKER | payload_type, payload_type)
-        _put_u32(block, _RTP_SSRC, np.full(self.packets, ssrc, dtype=np.int64))
-        _put_u16(block, _SRD_LENGTH, np.full(self.packets, payload_size, np.int64))
-        _put_u16(block, _SRD_ROW, (line | field * _FIELD).astype(np.int64))
-        _put_u16(block, _SRD_OFFSET, offset_pixels)
+        block[:, 0] = _layout.VERSION_2
+        block[:, 1] = np.where(marker, _layout.MARKER_MASK | payload_type, payload_type)
+        _put_u32(block, _layout.SSRC, np.full(self.packets, ssrc, dtype=np.int64))
+        _put_u16(
+            block,
+            _SRD_BASE + _layout.SRD_LENGTH,
+            np.full(self.packets, payload_size, np.int64),
+        )
+        _put_u16(
+            block,
+            _SRD_BASE + _layout.SRD_ROW,
+            (line | field * _layout.FLAG_MASK).astype(np.int64),
+        )
+        _put_u16(block, _SRD_BASE + _layout.SRD_OFFSET, offset_pixels)
         self._block = block
 
     def stamp(self, frame_index: int) -> NDArray[np.uint8]:
@@ -242,10 +238,10 @@ class FrameHeaders:
             )
         sequence = (
             self._initial_sequence + frame_index * self.packets + self._index
-        ) % _SEQUENCE_MODULUS
-        _put_u16(self._block, _RTP_SEQUENCE, sequence & 0xFFFF)
+        ) % _layout.U32_MODULUS
+        _put_u16(self._block, _layout.SEQUENCE, sequence & 0xFFFF)
         _put_u16(self._block, _EXTENDED_SEQUENCE, sequence >> 16)
-        _put_u32(self._block, _RTP_TIMESTAMP, self._timestamps(frame_index))
+        _put_u32(self._block, _layout.TIMESTAMP, self._timestamps(frame_index))
         return self._block
 
     def timestamp(self, frame_index: int, field_index: int = 0) -> int:
@@ -265,7 +261,7 @@ class FrameHeaders:
             * RTP_CLOCK_RATE
             * rate.denominator
         ) // (_FIELDS_PER_FRAME * rate.numerator)
-        return ticks % _TIMESTAMP_MODULUS
+        return ticks % _layout.U32_MODULUS
 
     def _timestamps(self, frame_index: int) -> NDArray[np.int64]:
         """One timestamp per packet: constant over a progressive frame, and

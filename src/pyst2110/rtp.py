@@ -20,12 +20,10 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from pyst2110 import _chunk
+from pyst2110 import _chunk, _layout
+from pyst2110._layout import FIXED_HEADER_SIZE
 
 __all__ = ["FIXED_HEADER_SIZE", "RtpHeaders", "parse_rtp"]
-
-#: Octets of RFC 3550 fixed header, before any CSRC list or extension.
-FIXED_HEADER_SIZE = 12
 
 _CSRC_SIZE = 4
 # RFC 3550 §5.3.1: two profile-defined octets and a length, then that many
@@ -34,18 +32,6 @@ _CSRC_SIZE = 4
 # zero-length extension the RFC permits.
 _EXTENSION_HEADER_SIZE = 4
 _EXTENSION_WORD_SIZE = 4
-
-# Byte 0: V(2) P(1) X(1) CC(4). Byte 1: M(1) PT(7).
-_VERSION_SHIFT = 6
-_PADDING_MASK = 0x20
-_EXTENSION_MASK = 0x10
-_CSRC_COUNT_MASK = 0x0F
-_MARKER_MASK = 0x80
-_PAYLOAD_TYPE_MASK = 0x7F
-
-_SEQUENCE = 2
-_TIMESTAMP = 4
-_SSRC = 8
 
 
 @dataclass(frozen=True)
@@ -99,19 +85,19 @@ def parse_rtp(
     whole = bounds >= FIXED_HEADER_SIZE
     flags = np.where(whole, packets[:, 0], 0)
     types = np.where(whole, packets[:, 1], 0)
-    csrc_count = (flags & _CSRC_COUNT_MASK).astype(np.uint8)
-    extension = (flags & _EXTENSION_MASK) != 0
+    csrc_count = (flags & _layout.CSRC_COUNT_MASK).astype(np.uint8)
+    extension = (flags & _layout.EXTENSION_MASK) != 0
 
     return RtpHeaders(
-        version=(flags >> _VERSION_SHIFT).astype(np.uint8),
-        padding=((flags & _PADDING_MASK) != 0),
+        version=(flags >> _layout.VERSION_SHIFT).astype(np.uint8),
+        padding=((flags & _layout.PADDING_MASK) != 0),
         extension=extension,
         csrc_count=csrc_count,
-        marker=((types & _MARKER_MASK) != 0),
-        payload_type=(types & _PAYLOAD_TYPE_MASK).astype(np.uint8),
-        sequence=_fixed_u16(packets, _SEQUENCE, whole),
-        timestamp=_fixed_u32(packets, _TIMESTAMP, whole),
-        ssrc=_fixed_u32(packets, _SSRC, whole),
+        marker=((types & _layout.MARKER_MASK) != 0),
+        payload_type=(types & _layout.PAYLOAD_TYPE_MASK).astype(np.uint8),
+        sequence=_fixed_u16(packets, _layout.SEQUENCE, whole),
+        timestamp=_fixed_u32(packets, _layout.TIMESTAMP, whole),
+        ssrc=_fixed_u32(packets, _layout.SSRC, whole),
         payload_offset=_payload_offset(packets, bounds, csrc_count, extension),
     )
 
