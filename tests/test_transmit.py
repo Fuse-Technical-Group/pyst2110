@@ -19,10 +19,35 @@ import pytest
 
 from pyst2110.geometry import choose_payload_size
 from pyst2110.sdp import SdpVideo
-from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders, max_payload_size
+from pyst2110.transmit import (
+    PACKET_HEADER_SIZE,
+    UDP_HEADER_SIZE,
+    FrameHeaders,
+    max_payload_size,
+)
 
 _SSRC = 0x1234ABCD
 _PAYLOAD_TYPE = 96
+
+
+def u16(block: np.ndarray, offset: int) -> np.ndarray:
+    """The big-endian 16-bit field at this octet, over every packet.
+
+    RFC 3550 section 5.1 puts every integer field in network byte order, so
+    one reader serves them all. The offsets stay literal at each call site,
+    which is where the field diagrams are being checked (§spec:testing).
+    """
+    return block[:, offset].astype(np.int64) << 8 | block[:, offset + 1]
+
+
+def u32(block: np.ndarray, offset: int) -> np.ndarray:
+    """The big-endian 32-bit field at this octet, over every packet."""
+    return u16(block, offset) << 16 | u16(block, offset + 2)
+
+
+def sequence32(block: np.ndarray) -> np.ndarray:
+    """The whole counter: the extended half at octet 12 above the RTP field."""
+    return u16(block, 12) << 16 | u16(block, 2)
 
 
 def video(**overrides: Any) -> SdpVideo:
@@ -69,15 +94,9 @@ def octets(text: str) -> list[int]:
 
 def test_a_frames_headers_are_the_octets_the_diagrams_specify():
     block = headers().stamp(0)
-    assert block.shape == (4, PACKET_HEADER_SIZE)
+    # Arrays in, arrays out — the shape the rest of the library speaks.
+    assert (block.dtype, block.shape) == (np.uint8, (4, PACKET_HEADER_SIZE))
     assert [row.tolist() for row in block] == [octets(one) for one in _FRAME]
-
-
-def test_the_block_is_one_row_per_packet_of_uint8():
-    """Arrays in, arrays out — the shape the rest of the library speaks."""
-    block = headers().stamp(0)
-    assert block.dtype == np.uint8
-    assert block.ndim == 2
 
 
 def test_the_header_is_twelve_of_rtp_two_of_sequence_and_one_srd():
@@ -95,18 +114,15 @@ def test_the_row_numbers_and_offsets_walk_the_raster_in_order():
     image" and only increase; section 6.1.5: offsets only increase within a row.
     """
     block = headers().stamp(0)
-    rows = block[:, 16].astype(int) << 8 | block[:, 17]
-    offsets = block[:, 18].astype(int) << 8 | block[:, 19]
-    assert rows.tolist() == [0, 0, 1, 1]
-    assert offsets.tolist() == [0, 2, 0, 2]
+    assert u16(block, 16).tolist() == [0, 0, 1, 1]
+    assert u16(block, 18).tolist() == [0, 2, 0, 2]
 
 
 def test_the_srd_length_is_the_payload_size_in_octets():
     """RFC 4175 section 4.2: "Number of octets of data included from this scan
     line", a multiple of the pgroup — not a count of pgroups or of pixels."""
     block = headers().stamp(0)
-    lengths = block[:, 14].astype(int) << 8 | block[:, 15]
-    assert lengths.tolist() == [5, 5, 5, 5]
+    assert u16(block, 14).tolist() == [5, 5, 5, 5]
 
 
 def test_no_packet_sets_the_continuation_bit():
@@ -121,21 +137,14 @@ def test_the_extended_sequence_carries_the_high_half_of_the_counter():
     sequence number", which is what makes the wrap inside this frame readable.
     """
     block = headers().stamp(0)
-    low = block[:, 2].astype(int) << 8 | block[:, 3]
-    high = block[:, 12].astype(int) << 8 | block[:, 13]
-    assert low.tolist() == [65534, 65535, 0, 1]
-    assert high.tolist() == [0, 0, 1, 1]
-
-
-def counter(row: np.ndarray) -> int:
-    """The whole 32-bit sequence: the extended half above the RTP field."""
-    return int.from_bytes(bytes(row[12:14].tolist() + row[2:4].tolist()), "big")
+    assert u16(block, 2).tolist() == [65534, 65535, 0, 1]
+    assert u16(block, 12).tolist() == [0, 0, 1, 1]
 
 
 def test_sequence_numbers_run_on_across_frames_without_a_gap():
     block = headers()
-    first = [counter(row) for row in block.stamp(0)]
-    second = [counter(row) for row in block.stamp(1)]
+    first = sequence32(block.stamp(0)).tolist()
+    second = sequence32(block.stamp(1)).tolist()
     assert first + second == list(range(65534, 65534 + 8))
 
 
@@ -143,10 +152,8 @@ def test_the_thirty_two_bit_counter_wraps_rather_than_overflowing():
     block = FrameHeaders(
         video(), payload_size=5, ssrc=_SSRC, initial_sequence=(1 << 32) - 2
     ).stamp(0)
-    low = (block[:, 2].astype(int) << 8 | block[:, 3]).tolist()
-    high = (block[:, 12].astype(int) << 8 | block[:, 13]).tolist()
-    assert low == [65534, 65535, 0, 1]
-    assert high == [65535, 65535, 0, 0]
+    assert u16(block, 2).tolist() == [65534, 65535, 0, 1]
+    assert u16(block, 12).tolist() == [65535, 65535, 0, 0]
 
 
 # --- The media timestamp --------------------------------------------------
@@ -155,9 +162,7 @@ def test_the_thirty_two_bit_counter_wraps_rather_than_overflowing():
 def test_every_packet_of_a_progressive_frame_shares_one_timestamp():
     """ST 2110-20 section 6.1.3: "All RTP packets which are part of the same
     progressive frame shall contain the same RTP Timestamp value"."""
-    block = headers().stamp(7)
-    stamps = {tuple(row[4:8].tolist()) for row in block}
-    assert len(stamps) == 1
+    assert len(set(u32(headers().stamp(7), 4).tolist())) == 1
 
 
 @pytest.mark.parametrize(
@@ -182,7 +187,7 @@ def test_the_timestamp_is_the_ninety_kilohertz_clock_at_the_frame_rate(
     block = FrameHeaders(video(frame_rate=rate), payload_size=5, ssrc=_SSRC).stamp(
         index
     )
-    assert int.from_bytes(bytes(block[0, 4:8].tolist()), "big") == expected
+    assert u32(block, 4)[0] == expected
 
 
 def test_a_timestamp_far_into_a_run_is_exact_rather_than_drifted():
@@ -191,43 +196,80 @@ def test_a_timestamp_far_into_a_run_is_exact_rather_than_drifted():
     block = FrameHeaders(video(frame_rate=rate), payload_size=5, ssrc=_SSRC)
     index = 60 * 60 * 60  # an hour of frames
     expected = index * 90_000 * rate.denominator // rate.numerator
-    stamped = block.stamp(index)
-    assert int.from_bytes(bytes(stamped[0, 4:8].tolist()), "big") == expected % (
-        1 << 32
-    )
+    assert u32(block.stamp(index), 4)[0] == expected % (1 << 32)
 
 
 def test_the_timestamp_wraps_within_its_thirty_two_bits():
     rate = Fraction(25)
     block = FrameHeaders(video(frame_rate=rate), payload_size=5, ssrc=_SSRC)
     index = (1 << 32) // 3600 + 1  # past the 32-bit clock's roll-over
-    stamped = block.stamp(index)
-    assert int.from_bytes(bytes(stamped[0, 4:8].tolist()), "big") == (index * 3600) % (
-        1 << 32
-    )
+    assert u32(block.stamp(index), 4)[0] == (index * 3600) % (1 << 32)
 
 
 # --- Interlace ------------------------------------------------------------
 
 
-def test_an_interlaced_frame_marks_and_stamps_each_field_separately():
-    """ST 2110-20 section 6.1.2 sets the marker on the last packet of a field,
-    and section 6.1.3 gives each field its own timestamp."""
+# Four pixels by four rows, interlaced: two rows a field, two packets a row.
+# ST 2110-20 section 6.1.2 marks the last packet of each field rather than of
+# the frame; section 6.1.5 restarts row numbers within a field and sets the F
+# bit on the second; section 6.1.3 gives each field its own timestamp, and 25
+# frames a second is 50 fields, so the second field is 1800 ticks (0x0708) on.
+_INTERLACED_FRAME = [
+    "80 60 00 00 00000000 1234ABCD 0000 0005 0000 0000",
+    "80 60 00 01 00000000 1234ABCD 0000 0005 0000 0002",
+    "80 60 00 02 00000000 1234ABCD 0000 0005 0001 0000",
+    "80 E0 00 03 00000000 1234ABCD 0000 0005 0001 0002",
+    "80 60 00 04 00000708 1234ABCD 0000 0005 8000 0000",
+    "80 60 00 05 00000708 1234ABCD 0000 0005 8000 0002",
+    "80 60 00 06 00000708 1234ABCD 0000 0005 8001 0000",
+    "80 E0 00 07 00000708 1234ABCD 0000 0005 8001 0002",
+]
+
+
+def test_an_interlaced_frames_headers_are_the_octets_the_diagrams_specify():
+    """The interlace vector, written from the field diagrams. The round trip
+    in ``test_transmit_slice.py`` is the additional property (§spec:testing).
+    """
     block = FrameHeaders(
-        video(height=4, interlaced=True), payload_size=5, ssrc=_SSRC
+        video(height=4, interlaced=True),
+        payload_size=5,
+        payload_type=_PAYLOAD_TYPE,
+        ssrc=_SSRC,
     ).stamp(0)
-    assert block.shape[0] == 8
-    marked = ((block[:, 1] & 0x80) != 0).tolist()
-    assert marked == [False, False, False, True, False, False, False, True]
+    assert [row.tolist() for row in block] == [octets(one) for one in _INTERLACED_FRAME]
 
-    fields = ((block[:, 16] & 0x80) != 0).tolist()
-    assert fields == [False] * 4 + [True] * 4
-    rows = (block[:, 16].astype(int) & 0x7F) << 8 | block[:, 17]
-    assert rows.tolist() == [0, 0, 1, 1, 0, 0, 1, 1], "rows restart in each field"
 
-    stamps = [int.from_bytes(bytes(row[4:8].tolist()), "big") for row in block]
-    # 25 frames a second is 50 fields, so the second field is 1800 ticks on.
-    assert stamps == [0] * 4 + [1800] * 4
+# --- The target format ----------------------------------------------------
+
+# 2160p24 YCbCr-4:2:2 10-bit: a 9600-octet line, 1200 octets a packet, eight
+# packets a line, 17,280 a frame. Four packets of frame 4 worked out from the
+# diagrams — the first, the last of row 0, the first of row 1, and the last of
+# the frame. 90 kHz over 24 frames a second is 3750 ticks a frame, so frame 4
+# stamps 15000 (0x3A98). The counter starts at 4 * 17280 = 69120, past the RTP
+# field's wrap, so the extended sequence number reads 1 across the frame. The
+# offsets are sample positions: 7 * 1200 octets is 1680 pgroups is 3360 pixels
+# (0x0D20), and the last row of 2160 is 2159 (0x086F).
+_2160P24_FRAME_4 = {
+    0: "80 60 0E 00 00003A98 1234ABCD 0001 04B0 0000 0000",
+    7: "80 60 0E 07 00003A98 1234ABCD 0001 04B0 0000 0D20",
+    8: "80 60 0E 08 00003A98 1234ABCD 0001 04B0 0001 0000",
+    17_279: "80 E0 51 7F 00003A98 1234ABCD 0001 04B0 086F 0D20",
+}
+
+
+def test_the_target_formats_packets_are_the_octets_the_diagrams_specify():
+    """2160p24 is what the consuming runtime asks for first, and the round
+    trip is otherwise the only thing that checks it (§spec:testing)."""
+    frame = FrameHeaders(
+        video(width=3840, height=2160, frame_rate=Fraction(24)),
+        payload_size=1200,
+        payload_type=_PAYLOAD_TYPE,
+        ssrc=_SSRC,
+    )
+    assert frame.packet_count == 17_280
+    block = frame.stamp(4)
+    for index, expected in _2160P24_FRAME_4.items():
+        assert block[index].tolist() == octets(expected), f"packet {index}"
 
 
 def test_an_odd_height_gives_the_first_field_the_extra_line():
@@ -236,7 +278,7 @@ def test_an_odd_height_gives_the_first_field_the_extra_line():
     block = FrameHeaders(
         video(height=5, interlaced=True), payload_size=5, ssrc=_SSRC
     ).stamp(0)
-    fields = ((block[:, 16] & 0x80) != 0).tolist()
+    fields = ((u16(block, 16) & 0x8000) != 0).tolist()
     assert fields.count(False) == 6, "three lines of two packets in the first field"
     assert fields.count(True) == 4, "two lines in the second"
 
@@ -260,13 +302,6 @@ def test_the_frame_offsets_of_an_interlaced_frame_interleave_the_fields():
     assert block.frame_offset_octets.tolist() == [0, 5, 20, 25, 10, 15, 30, 35]
 
 
-def test_the_offsets_and_headers_agree_on_how_many_packets_there_are():
-    block = headers()
-    assert block.packet_count == 4
-    assert block.frame_offset_octets.size == block.packet_count
-    assert block.stamp(0).shape[0] == block.packet_count
-
-
 # --- What a caller has to know --------------------------------------------
 
 
@@ -284,8 +319,11 @@ def test_the_payload_limit_leaves_room_for_the_headers_and_the_udp_header():
     octets. The UDP Size ... includes the length of the UDP header (8 octets)
     and also the RTP headers and data." So 28 octets of the limit are spoken
     for before any sample data — the limit is not a payload size."""
-    assert max_payload_size(video()) == 1460 - 8 - PACKET_HEADER_SIZE
-    assert max_payload_size(video(max_udp=8960)) == 8960 - 8 - PACKET_HEADER_SIZE
+    assert max_payload_size(video()) == 1460 - UDP_HEADER_SIZE - PACKET_HEADER_SIZE
+    assert (
+        max_payload_size(video(max_udp=8960))
+        == 8960 - UDP_HEADER_SIZE - PACKET_HEADER_SIZE
+    )
 
 
 def test_a_payload_that_would_overrun_the_declared_udp_limit_is_refused():
@@ -300,7 +338,7 @@ def test_a_payload_that_would_overrun_the_declared_udp_limit_is_refused():
     # Sized against the payload limit instead, it fits with nothing to spare.
     payload_size = choose_payload_size(wide, max_payload_size(wide))
     frame = FrameHeaders(wide, payload_size, ssrc=_SSRC)
-    assert payload_size + PACKET_HEADER_SIZE + 8 <= wide.max_udp
+    assert payload_size + PACKET_HEADER_SIZE + UDP_HEADER_SIZE <= wide.max_udp
     assert frame.packet_count == 2 * wide.height
 
 

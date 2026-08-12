@@ -28,8 +28,9 @@ one consumer's use behind it.
   its own (Table 4: one octet per pixel at 8 bits, five per four at 10,
   three per two at 12, two per pixel at 16 and 16f). `depth=16f` is
   half-float, section 7.4.2, sharing 16-bit's pgroup — and
-  `src/pyst2110/sdp.py` rejects it in `int()` before geometry sees it, so
-  it needs a depth that is not an integer as much as a table entry.
+  `src/pyst2110/sdp.py` refuses it twice over, in `int()` on the way in and
+  against the depths it permits on the way out, so it needs a depth that is
+  not an integer as much as a table entry.
 - **sdp-clock-attributes**: a conformant ST 2110-10 SDP carries
   `a=ts-refclk:` and `a=mediaclk:`, and `format_sdp` writes neither
   (`src/pyst2110/sdp.py`). They name a PTP grandmaster and a media clock

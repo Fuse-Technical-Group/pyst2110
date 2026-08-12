@@ -312,6 +312,12 @@ Round-tripping the writer through the reader proves they agree with each
 other and nothing about either agreeing with the wire; both are tested
 against fixed vectors, and the round trip is an additional property.
 
+Which cases carry a vector follows from that: a format verified only through
+the round trip is a format neither side is tied to the documents for. So a
+raster small enough to work out on paper, the interlaced layout, and the
+target format each have one, the last as named packets of a frame too large
+to write out whole.
+
 Captures from real senders are the strongest evidence available without a
 NIC. Where a fixture is taken off the wire its provenance is recorded
 beside it — which sender, which format — because a capture whose origin is

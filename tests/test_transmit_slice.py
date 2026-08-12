@@ -20,6 +20,7 @@ from __future__ import annotations
 from fractions import Fraction
 
 import numpy as np
+import pytest
 
 from pyst2110 import (
     FrameTracker,
@@ -37,7 +38,12 @@ from pyst2110 import (
     parse_video_format,
     raster_offset,
 )
-from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders, max_payload_size
+from pyst2110.transmit import (
+    PACKET_HEADER_SIZE,
+    UDP_HEADER_SIZE,
+    FrameHeaders,
+    max_payload_size,
+)
 
 _FLOW = SdpFlow("239.100.0.1", 20000, "192.168.100.2")
 _2160P24 = SdpVideo(
@@ -51,24 +57,39 @@ _2160P24 = SdpVideo(
 _SSRC = 0x1234ABCD
 
 
+@pytest.fixture(scope="module")
+def frame() -> tuple[SdpVideo, int, FrameHeaders, np.ndarray]:
+    """The offer's frame, built once: format, payload size, headers, sizes.
+
+    Every case below stamps for itself, and a stamp returns the same array
+    each time by design (§spec:transmit-headers), so one build serves them
+    all. The cases that need their own payload type, initial sequence number
+    or raster stay standalone.
+    """
+    video = parse_video_format(format_sdp(_FLOW, _2160P24))
+    payload_size = choose_payload_size(video, max_payload_size(video))
+    headers = FrameHeaders(video, payload_size, ssrc=_SSRC)
+    sizes = np.full(headers.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
+    return video, payload_size, headers, sizes
+
+
 def test_the_offer_this_library_writes_describes_the_format_it_was_given():
     """The head of the slice: a transmitter is configured by an offer it
     produces, so the offer has to survive its own reader (§spec:sdp)."""
     assert parse_video_format(format_sdp(_FLOW, _2160P24)) == _2160P24
 
 
-def test_2160p24_geometry_is_what_the_raster_works_out_to():
+def test_2160p24_geometry_is_what_the_raster_works_out_to(frame):
     """3840 pixels of 4:2:2 10-bit is 1920 five-octet pgroups: a 9600-octet
     line. Of the 1432 octets the standard UDP limit leaves for sample data,
     1200 is the largest that divides the line — 240 pgroups, the next divisor
     up being 320 — so a frame is 8 packets a line and 17,280 packets.
     """
-    video = parse_video_format(format_sdp(_FLOW, _2160P24))
+    video, payload_size, _, _ = frame
     assert line_bytes(video) == 9600
     assert max_payload_size(video) == 1432
-    payload_size = choose_payload_size(video, max_payload_size(video))
     assert payload_size == 1200
-    assert payload_size + PACKET_HEADER_SIZE + 8 <= video.max_udp
+    assert payload_size + PACKET_HEADER_SIZE + UDP_HEADER_SIZE <= video.max_udp
     assert packets_per_line(video, payload_size) == 8
     assert packets_per_frame(video, payload_size) == 17_280
     # 83% of the datagram is sample data; the rest is what a divisor of the
@@ -76,44 +97,38 @@ def test_2160p24_geometry_is_what_the_raster_works_out_to():
     assert payload_size / video.max_udp > 0.82
 
 
-def test_a_built_frame_parses_back_into_descriptors_that_tile_the_raster():
+def test_a_built_frame_parses_back_into_descriptors_that_tile_the_raster(frame):
     """The verify criterion. A payload that tiles a line makes the frame one
     contiguous run, so exact starts prove no hole and no overlap at once."""
-    video = parse_video_format(format_sdp(_FLOW, _2160P24))
-    payload_size = choose_payload_size(video, max_payload_size(video))
-    frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
-    block = frame.stamp(0)
-    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
+    video, payload_size, headers, sizes = frame
+    block = headers.stamp(0)
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
 
     assert not payload.overflowed.any()
-    assert payload.segments.tolist() == [1] * frame.packet_count
-    assert payload.field.tolist() == [False] * frame.packet_count
+    assert payload.segments.tolist() == [1] * headers.packet_count
+    assert payload.field.tolist() == [False] * headers.packet_count
     assert (payload.length == payload_size).all()
 
     fits = fits_raster(video, payload.line, payload.offset_samples)
     assert fits.all(), "a frame this library built places every descriptor"
     starts = raster_offset(video, payload.line, payload.offset_samples)
-    expected = np.arange(frame.packet_count, dtype=np.int64) * payload_size
+    expected = np.arange(headers.packet_count, dtype=np.int64) * payload_size
     assert starts.tolist() == expected.tolist()
     assert int(payload.length.sum()) == video.height * line_bytes(video)
 
 
-def test_the_transmit_offsets_agree_with_where_the_receive_parse_places_them():
+def test_the_transmit_offsets_agree_with_where_the_receive_parse_places_them(frame):
     """The two sides of the boundary meet here: what the builder says a packet
     carries is where the parse says the same packet's payload belongs."""
-    video = _2160P24
-    payload_size = choose_payload_size(video, max_payload_size(video))
-    frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
-    block = frame.stamp(0)
-    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
+    video, _, headers, sizes = frame
+    block = headers.stamp(0)
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
     placed = raster_offset(video, payload.line, payload.offset_samples)
-    assert frame.frame_offset_octets.tolist() == placed.tolist()
+    assert headers.frame_offset_octets.tolist() == placed.tolist()
 
 
 def test_the_rtp_fields_come_back_as_they_were_built():
@@ -168,14 +183,12 @@ def test_three_frames_run_on_with_no_loss_and_three_frame_boundaries():
     assert stamps == [0, 3750, 7500]
 
 
-def test_a_dropped_packet_leaves_a_hole_the_receive_path_can_see():
+def test_a_dropped_packet_leaves_a_hole_the_receive_path_can_see(frame):
     """The headers this library builds carry enough for a receiver to detect
     what never arrived — the property the whole pairing exists for."""
-    video = _2160P24
-    payload_size = choose_payload_size(video, max_payload_size(video))
-    frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
-    lossy = np.delete(frame.stamp(0), [11, 12], axis=0)
-    sizes = np.full(lossy.shape[0], PACKET_HEADER_SIZE, dtype=np.int64)
+    video, payload_size, headers, sizes = frame
+    lossy = np.delete(headers.stamp(0), [11, 12], axis=0)
+    sizes = sizes[: lossy.shape[0]]
 
     rtp = parse_rtp(lossy, sizes=sizes)
     payload = parse_payload_headers(lossy, rtp.payload_offset, sizes=sizes)
@@ -239,19 +252,12 @@ def test_an_odd_interlaced_height_places_every_descriptor_it_builds():
     assert fits_raster(video, payload.line, payload.offset_samples).all()
 
 
-def test_the_emitted_offer_and_the_built_frame_describe_one_flow():
-    """End to end: the offer says General Packing Mode and 1200-octet packets
-    fit under the limit it declares, which is what makes the pair consistent.
-    """
+def test_the_emitted_offer_and_the_built_frame_describe_one_flow(frame):
+    """End to end: the offer claims General Packing Mode, and no packet the
+    frame carries declares a continuation — which is that mode."""
+    _, _, headers, _ = frame
     offer = format_sdp(_FLOW, _2160P24)
-    video = parse_video_format(offer)
-    payload_size = choose_payload_size(video, max_payload_size(video))
-    frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
 
     assert "PM=2110GPM" in offer
     assert "a=rtpmap:96 raw/90000" in offer
-    # One SRD header a packet, so no packet declares a continuation and the
-    # General Packing Mode the offer claims is the one being built.
-    block = frame.stamp(0)
-    assert ((block[:, 18] & 0x80) != 0).sum() == 0
-    assert PACKET_HEADER_SIZE + payload_size + 8 <= video.max_udp
+    assert ((headers.stamp(0)[:, 18] & 0x80) != 0).sum() == 0
