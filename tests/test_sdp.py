@@ -243,13 +243,36 @@ _OFFER_LINES = [
     "c=IN IP4 239.100.0.1/64",
     "a=source-filter: incl IN IP4 239.100.0.1 192.168.100.2",
     "a=rtpmap:96 raw/90000",
-    # ST 2110-20 section 7.2, in the order the standard lists them. Entries are
-    # "separated by the semicolon character followed by whitespace" with "no
-    # semicolon character after the last item" (section 7.1).
+    # ST 2110-20 section 7.2, in the order the standard lists them, then the
+    # one ST 2110-21 section 8.1 adds. Entries are "separated by the semicolon
+    # character followed by whitespace" with "no semicolon character after the
+    # last item" (2110-20 section 7.1).
     "a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; "
     "exactframerate=60000/1001; depth=10; colorimetry=BT709; PM=2110GPM; "
-    "SSN=ST2110-20:2017",
+    "SSN=ST2110-20:2017; TP=2110TPN",
 ]
+
+# SMPTE ST 2110-20 section 7.2, "Required Media Type Parameters": the eight a
+# sender "shall include ... in the a=fmtp clause of the SDP for all streams
+# conforming to this standard".
+_ST2110_20_REQUIRED = frozenset(
+    {
+        "sampling",
+        "depth",
+        "width",
+        "height",
+        "exactframerate",
+        "colorimetry",
+        "PM",
+        "SSN",
+    }
+)
+
+# SMPTE ST 2110-21 section 8.1, "Required Parameters": the *additional*
+# parameter a sender "shall include in the a=fmtp clause of the SDP for all
+# video RTP streams conforming to this standard". It lives in -21 rather than
+# -20, so a conformance review of -20 alone does not see it.
+_ST2110_21_REQUIRED = frozenset({"TP"})
 
 
 def test_an_emitted_offer_is_the_document_rfc_4566_and_st_2110_20_require():
@@ -265,18 +288,79 @@ def test_records_end_with_crlf():
 
 
 def test_every_required_media_type_parameter_is_present():
-    """ST 2110-20 section 7.2 names eight, and a sender "shall include" them."""
+    """A sender's required set is not one document's. ST 2110-20 section 7.2
+    names eight and ST 2110-21 section 8.1 adds TP, so an offer carrying only
+    the first eight is a stream a conformant receiver has grounds to refuse.
+    """
     fmtp = _fmtp(format_sdp(_FLOW, _VIDEO))
-    assert set(fmtp) == {
-        "sampling",
-        "width",
-        "height",
-        "exactframerate",
-        "depth",
-        "colorimetry",
-        "PM",
-        "SSN",
-    }
+    assert set(fmtp) == _ST2110_20_REQUIRED | _ST2110_21_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"interlaced": True},
+        {"max_udp": 8960},
+        {"colorimetry": "ALPHA"},
+        {"interlaced": True, "max_udp": 8960, "depth": 12, "sampling": "RGB"},
+    ],
+)
+def test_no_optional_parameter_displaces_a_required_one(overrides: dict):
+    """The set above is what an offer must carry whatever else it carries. The
+    section 7.3 parameters are written by their difference from a default, and
+    a required one must not be able to go missing behind that."""
+    fmtp = _fmtp(format_sdp(_FLOW, video(**overrides)))
+    assert set(fmtp) >= _ST2110_20_REQUIRED | _ST2110_21_REQUIRED
+
+
+def test_the_sender_signals_its_traffic_shape_because_st_2110_21_requires_it():
+    """Section 8.1: TP "signals the type of the sender as defined in section
+    7.1", and section 7.1.2 fixes Type N's token as 2110TPN."""
+    assert _fmtp(format_sdp(_FLOW, _VIDEO))["TP"] == "2110TPN"
+
+
+@pytest.mark.parametrize(
+    "sender_type",
+    # ST 2110-21 section 7.1.1: a sender "shall conform to one or more of the
+    # types defined in clauses 7.1.2, 7.1.3, or 7.1.4". Each of those clauses
+    # ends "shall signal compliance with a Media Type Parameter TP of value
+    # <token>" — Narrow, Narrow Linear and Wide, spelled as the standard
+    # prints them.
+    ["2110TPN", "2110TPNL", "2110TPW"],
+)
+def test_every_sender_type_the_standard_defines_can_be_signalled(sender_type: str):
+    fmtp = _fmtp(format_sdp(_FLOW, _VIDEO, sender_type=sender_type))
+    assert fmtp["TP"] == sender_type
+
+
+@pytest.mark.parametrize(
+    "sender_type",
+    [
+        "2110TPX",  # not a type
+        "",
+        "narrow",  # the prose name, not the token
+        "2110TPn",  # the tokens are printed uppercase
+        # A forged parameter: reparsed, the packing mode reads Block and the
+        # sizing a peer computes changes.
+        "2110TPN; PM=2110BPM",
+        "2110TPN\r\nc=IN IP4 6.6.6.6",
+    ],
+)
+def test_a_sender_type_st_2110_21_does_not_define_is_refused(sender_type: str):
+    """A TP is a claim about pacing a receiver provisions its buffer from, so
+    an unrecognised one is refused rather than passed through."""
+    with pytest.raises(ValueError, match="TP"):
+        format_sdp(_FLOW, _VIDEO, sender_type=sender_type)
+
+
+def test_the_sender_type_follows_the_parameters_of_the_document_that_owns_it():
+    """ST 2110-21 section 8.1 calls TP "additional" to 2110-20's set, so it is
+    written after them — and before the section 7.3 parameters, which are
+    written only by their difference from a default."""
+    fmtp = list(_fmtp(format_sdp(_FLOW, video(interlaced=True, max_udp=8960))))
+    assert fmtp.index("SSN") < fmtp.index("TP") < fmtp.index("interlace")
+    assert fmtp.index("TP") < fmtp.index("MAXUDP")
 
 
 def test_an_integer_frame_rate_is_a_single_decimal_number():

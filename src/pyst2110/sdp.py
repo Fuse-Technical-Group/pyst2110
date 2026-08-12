@@ -19,6 +19,10 @@ from pyst2110 import _layout
 
 __all__ = [
     "RTP_CLOCK_RATE",
+    "SENDER_TYPES",
+    "SENDER_TYPE_NARROW",
+    "SENDER_TYPE_NARROW_LINEAR",
+    "SENDER_TYPE_WIDE",
     "STANDARD_UDP_SIZE_LIMIT",
     "SdpFlow",
     "SdpVideo",
@@ -53,6 +57,23 @@ _ALPHA = "ALPHA"
 # ST 2110-20 section 7.5 has a token for a colorimetry nobody stated, so an SDP
 # that omits the required parameter is recorded rather than guessed over.
 _UNSPECIFIED = "UNSPECIFIED"
+
+#: A Narrow sender (SMPTE ST 2110-21 section 7.1.2): the gapped packet read
+#: schedule, sending nothing during the interval a blanked raster would take.
+SENDER_TYPE_NARROW = "2110TPN"
+
+#: A Narrow Linear sender (section 7.1.3): the same buffer model over the
+#: linear packet read schedule, spread evenly across the whole frame.
+SENDER_TYPE_NARROW_LINEAR = "2110TPNL"
+
+#: A Wide sender (section 7.1.4): the linear schedule under a buffer model
+#: some ninety times looser, for senders whose pacing software decides.
+SENDER_TYPE_WIDE = "2110TPW"
+
+#: Every value ``TP`` may take. Section 7.1.1: a sender "shall conform to one
+#: or more of the types defined in clauses 7.1.2, 7.1.3, or 7.1.4", and each
+#: of those clauses fixes the token its type signals.
+SENDER_TYPES = (SENDER_TYPE_NARROW, SENDER_TYPE_NARROW_LINEAR, SENDER_TYPE_WIDE)
 
 # ST 2110-20 section 7.2: width and height are "integers between 1 and 32767
 # inclusive" — which is also all the SRD Row Number and Offset fields hold.
@@ -278,6 +299,7 @@ def format_sdp(
     video: SdpVideo,
     *,
     payload_type: int = _DEFAULT_PAYLOAD_TYPE,
+    sender_type: str = SENDER_TYPE_NARROW,
     session_name: str = " ",
     session_id: int = 0,
     ttl: int = 64,
@@ -285,9 +307,15 @@ def format_sdp(
     """Write the SDP offer that describes this flow and format.
 
     The document RFC 4566 section 5 requires, in the order it requires, with
-    the media type parameters of ST 2110-20 section 7.2 on the ``a=fmtp:``
-    line and the 90 kHz clock of section 7.1 on the ``a=rtpmap:`` one.
-    Records end with CRLF, as RFC 4566 specifies.
+    the media type parameters of ST 2110-20 section 7.2 and ST 2110-21
+    section 8.1 on the ``a=fmtp:`` line and the 90 kHz clock of ST 2110-20
+    section 7.1 on the ``a=rtpmap:`` one. Records end with CRLF, as RFC 4566
+    specifies.
+
+    ``sender_type`` is the ``TP`` parameter, one of :data:`SENDER_TYPES`. It
+    describes the pacing of whatever puts the packets on the wire, which is
+    not this library (§spec:scope-boundary), so the caller that owns the pacer
+    owns the value; the default is documented in SPEC §spec:sdp.
 
     ``session_id`` fills both the session identifier and its version in the
     ``o=`` line. It defaults to zero, which is repeatable rather than unique:
@@ -334,16 +362,18 @@ def format_sdp(
             f"{destination} {origin}"
         )
     lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
-    lines.append(f"a=fmtp:{payload_type} {_media_type_parameters(video)}")
+    lines.append(f"a=fmtp:{payload_type} {_media_type_parameters(video, sender_type)}")
     return "".join(f"{line}\r\n" for line in lines)
 
 
-def _media_type_parameters(video: SdpVideo) -> str:
+def _media_type_parameters(video: SdpVideo, sender_type: str) -> str:
     """The ``a=fmtp:`` parameters for a format, in ST 2110-20 section 7 order.
 
     Section 7.1 fixes the punctuation: entries "separated by the semicolon
     (';') character followed by whitespace", with "no semicolon character
-    after the last item".
+    after the last item". It fixes no order, so the order here is the two
+    standards' own: the eight ST 2110-20 section 7.2 requires, then the ``TP``
+    ST 2110-21 section 8.1 calls "additional", then section 7.3's.
 
     The parameters of section 7.3 are written only where they differ from
     their defaults, because that is what their absence is defined to mean —
@@ -362,6 +392,11 @@ def _media_type_parameters(video: SdpVideo) -> str:
     _integer(video.max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
     if video.frame_rate <= 0:
         raise ValueError(f"an exactframerate of {video.frame_rate} is not a rate")
+    if sender_type not in SENDER_TYPES:
+        raise ValueError(
+            f"a TP of {sender_type!r} is not one of the {list(SENDER_TYPES)} "
+            f"sender types ST 2110-21 section 7.1 defines"
+        )
 
     parameters = [
         f"sampling={video.sampling}",
@@ -372,6 +407,7 @@ def _media_type_parameters(video: SdpVideo) -> str:
         f"colorimetry={video.colorimetry}",
         f"PM={_PACKING_MODE}",
         f"SSN={_standard_number(video.colorimetry)}",
+        f"TP={sender_type}",
     ]
     if video.interlaced:
         parameters.append("interlace")
