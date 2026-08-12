@@ -73,7 +73,7 @@ class PayloadHeaders:
     #: turns it into one using the format's pgroup. Unbounded here for the
     #: same reason as :attr:`line`, and bounded by the same mask: the scaling
     #: carries a position past the row's width straight through.
-    offset: NDArray[np.int64]
+    offset_samples: NDArray[np.int64]
     #: Where this descriptor's data begins within its packet row. Derived
     #: from the declared lengths ahead of it, which are unchecked, so it can
     #: point past the packet — and ``size - source`` is then negative, which
@@ -190,7 +190,7 @@ def parse_payload_headers(
         length=length.ravel()[kept],
         line=line.ravel()[kept],
         field=field.ravel()[kept],
-        offset=offset.ravel()[kept],
+        offset_samples=offset.ravel()[kept],
         source=source.ravel()[kept],
         overflowed=overflowed,
     )

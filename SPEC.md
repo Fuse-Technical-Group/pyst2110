@@ -277,7 +277,9 @@ Mode, and what the emitted offer declares (§road:future).
 The block is **reused**: stamping writes into the array it returned last
 time. Allocating a frame of headers per frame is the cost the split between
 building and stamping exists to avoid, so a caller holding two frames at
-once is the one that copies.
+once is the one that copies. Every array a stamp derives on the way is
+allocated beside the block for the same reason — a claim about allocation
+that the stamp then made per call would be worth less than none.
 
 Every value that reaches a header is bounded against the bits that hold it,
 and bounded identically wherever it enters. A width past the SRD Offset's

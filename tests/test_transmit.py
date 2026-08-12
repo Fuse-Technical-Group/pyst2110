@@ -248,7 +248,7 @@ def test_the_frame_offsets_walk_the_raster_a_packet_at_a_time():
     """The transmit-side descriptor: which octets of the frame buffer this
     packet carries. Never the pixels themselves (§spec:scope-boundary)."""
     block = headers()
-    assert block.frame_offset.tolist() == [0, 5, 10, 15]
+    assert block.frame_offset_octets.tolist() == [0, 5, 10, 15]
     assert block.payload_size == 5
 
 
@@ -257,14 +257,14 @@ def test_the_frame_offsets_of_an_interlaced_frame_interleave_the_fields():
     of the first, so field 1 row r is frame row 2r+1."""
     block = FrameHeaders(video(height=4, interlaced=True), payload_size=5, ssrc=_SSRC)
     # Line 10 octets: field 0 rows 0 and 2, field 1 rows 1 and 3.
-    assert block.frame_offset.tolist() == [0, 5, 20, 25, 10, 15, 30, 35]
+    assert block.frame_offset_octets.tolist() == [0, 5, 20, 25, 10, 15, 30, 35]
 
 
 def test_the_offsets_and_headers_agree_on_how_many_packets_there_are():
     block = headers()
-    assert block.packets == 4
-    assert block.frame_offset.size == block.packets
-    assert block.stamp(0).shape[0] == block.packets
+    assert block.packet_count == 4
+    assert block.frame_offset_octets.size == block.packet_count
+    assert block.stamp(0).shape[0] == block.packet_count
 
 
 # --- What a caller has to know --------------------------------------------
@@ -301,7 +301,7 @@ def test_a_payload_that_would_overrun_the_declared_udp_limit_is_refused():
     payload_size = choose_payload_size(wide, max_payload_size(wide))
     frame = FrameHeaders(wide, payload_size, ssrc=_SSRC)
     assert payload_size + PACKET_HEADER_SIZE + 8 <= wide.max_udp
-    assert frame.packets == 2 * wide.height
+    assert frame.packet_count == 2 * wide.height
 
 
 def test_a_payload_size_that_does_not_tile_a_line_is_refused():

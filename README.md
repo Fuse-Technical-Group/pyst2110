@@ -48,8 +48,8 @@ and not a filter. A packet is free to name a row outside the image, so
 raster and a consumer places only those:
 
 ```python
-fits = fits_raster(video, payload.line, payload.offset)
-starts = raster_offset(video, payload.line[fits], payload.offset[fits])
+fits = fits_raster(video, payload.line, payload.offset_samples)
+starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
 ```
 
 Sending is the same shape in reverse. A frame's headers are built once
@@ -63,12 +63,17 @@ payload_size = choose_payload_size(video, max_payload_size(video))
 frame = FrameHeaders(video, payload_size, ssrc=0x1234ABCD)
 for index in range(frames):
     headers = frame.stamp(index)   # (packets, 20) uint8, one row per packet
-    ...                            # send each header with frame.frame_offset
+    ...                            # send each header with frame.frame_offset_octets
 offer = format_sdp(flow, video)    # the SDP describing what was just sent
 ```
 
-`frame_offset` says which octets of the frame buffer each packet
+`frame_offset_octets` says which octets of the frame buffer each packet
 carries. Moving them is the consumer's, as on the receive side.
+
+`stamp` hands back the same array every time, restamped in place — that
+is what keeps the loop above from allocating a frame of headers per
+frame. So `headers` is only valid until the next `stamp`: a caller
+queueing two frames at once copies the first.
 
 ## API
 

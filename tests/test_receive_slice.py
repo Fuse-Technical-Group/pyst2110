@@ -139,9 +139,9 @@ def test_a_frame_parses_into_descriptors_that_tile_the_raster_exactly_once(frame
 
     # Where every payload lands: the descriptors that name a place in the
     # raster, their row, then their offset turned into octets by the pgroup.
-    fits = fits_raster(video, payload.line, payload.offset)
+    fits = fits_raster(video, payload.line, payload.offset_samples)
     assert fits.all(), "a conformant frame places every descriptor"
-    starts = raster_offset(video, payload.line[fits], payload.offset[fits])
+    starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
     ends = starts + payload.length[fits]
 
     coverage = np.zeros(video.height * stride + 1, dtype=np.int64)
@@ -176,19 +176,19 @@ def test_a_crafted_descriptor_is_flagged_before_it_places_anything():
     rtp = parse_rtp(hostile, sizes=sizes)
     payload = parse_payload_headers(hostile, rtp.payload_offset, sizes=sizes)
     assert payload.line.tolist() == [32767]
-    assert payload.offset.tolist() == [32767]
+    assert payload.offset_samples.tolist() == [32767]
     assert payload.length.tolist() == [65535]
 
     # Unmasked, the descriptor scales to 157 MB into a 5 MB frame.
     frame_bytes = video.height * stride
-    unmasked = raster_offset(video, payload.line, payload.offset)
+    unmasked = raster_offset(video, payload.line, payload.offset_samples)
     assert unmasked.tolist() == [157_363_515]
     assert unmasked[0] > frame_bytes
 
     # Masked, it places nothing at all.
-    fits = fits_raster(video, payload.line, payload.offset)
+    fits = fits_raster(video, payload.line, payload.offset_samples)
     assert fits.tolist() == [False]
-    starts = raster_offset(video, payload.line[fits], payload.offset[fits])
+    starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
     assert starts.size == 0
 
 
@@ -228,8 +228,8 @@ def test_a_dropped_packet_shows_up_as_loss_and_a_hole(frame):
 
     payload = parse_payload_headers(lossy, rtp.payload_offset, sizes=sizes)
     stride = line_bytes(video)
-    fits = fits_raster(video, payload.line, payload.offset)
-    starts = raster_offset(video, payload.line[fits], payload.offset[fits])
+    fits = fits_raster(video, payload.line, payload.offset_samples)
+    starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
     covered = np.zeros(video.height * stride, dtype=np.int64)
     for start, length in zip(
         starts.tolist(), payload.length[fits].tolist(), strict=True

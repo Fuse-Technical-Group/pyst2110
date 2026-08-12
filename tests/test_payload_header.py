@@ -150,7 +150,7 @@ def test_one_segment_reads_back_every_field():
     assert result.length.tolist() == [1200]
     assert result.line.tolist() == [42]
     assert result.field.tolist() == [False]
-    assert result.offset.tolist() == [480]
+    assert result.offset_samples.tolist() == [480]
     # 12 of RTP, 2 of extended sequence, 6 of the one SRD header.
     assert result.source.tolist() == [20]
 
@@ -163,7 +163,7 @@ def test_the_continuation_bit_makes_the_segment_count_data_dependent():
     assert result.length.tolist() == [10, 20]
     assert result.line.tolist() == [5, 6]
     # The first SRD's offset word is 0x8000: C set, offset zero.
-    assert result.offset.tolist() == [0, 100]
+    assert result.offset_samples.tolist() == [0, 100]
 
 
 def test_the_field_bit_is_separated_from_the_line_number():
@@ -179,7 +179,7 @@ def test_both_flags_set_still_yield_fifteen_bit_values():
     assert result.extended_sequence.tolist() == [65535]
     assert result.field.tolist() == [True]
     assert result.line.tolist() == [32767]
-    assert result.offset.tolist() == [32767]
+    assert result.offset_samples.tolist() == [32767]
     # ST 2110-20 permits a zero length only with exactly one SRD header, and
     # it means no sample row data follows.
     assert result.length.tolist() == [0]
@@ -201,7 +201,7 @@ def test_three_segments_chain_their_sources():
     result = parse(_THREE_SRDS)
     assert result.segments.tolist() == [3]
     assert result.line.tolist() == [0, 1, 2]
-    assert result.offset.tolist() == [0, 2, 4]
+    assert result.offset_samples.tolist() == [0, 2, 4]
     # 12 RTP + 2 + 18 for three SRD headers = 32, then five octets each.
     assert result.source.tolist() == [32, 37, 42]
 
@@ -252,7 +252,7 @@ def test_an_rtp_extension_shifts_the_payload_header():
     ]
     result = parse(packet)
     assert result.line.tolist() == [42]
-    assert result.offset.tolist() == [480]
+    assert result.offset_samples.tolist() == [480]
     # Eight octets of extension, so everything after it moves by eight.
     assert result.source.tolist() == [20 + 8]
 

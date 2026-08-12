@@ -83,20 +83,20 @@ def test_a_built_frame_parses_back_into_descriptors_that_tile_the_raster():
     payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     block = frame.stamp(0)
-    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
 
     assert not payload.overflowed.any()
-    assert payload.segments.tolist() == [1] * frame.packets
-    assert payload.field.tolist() == [False] * frame.packets
+    assert payload.segments.tolist() == [1] * frame.packet_count
+    assert payload.field.tolist() == [False] * frame.packet_count
     assert (payload.length == payload_size).all()
 
-    fits = fits_raster(video, payload.line, payload.offset)
+    fits = fits_raster(video, payload.line, payload.offset_samples)
     assert fits.all(), "a frame this library built places every descriptor"
-    starts = raster_offset(video, payload.line, payload.offset)
-    expected = np.arange(frame.packets, dtype=np.int64) * payload_size
+    starts = raster_offset(video, payload.line, payload.offset_samples)
+    expected = np.arange(frame.packet_count, dtype=np.int64) * payload_size
     assert starts.tolist() == expected.tolist()
     assert int(payload.length.sum()) == video.height * line_bytes(video)
 
@@ -108,12 +108,12 @@ def test_the_transmit_offsets_agree_with_where_the_receive_parse_places_them():
     payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     block = frame.stamp(0)
-    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
-    placed = raster_offset(video, payload.line, payload.offset)
-    assert frame.frame_offset.tolist() == placed.tolist()
+    placed = raster_offset(video, payload.line, payload.offset_samples)
+    assert frame.frame_offset_octets.tolist() == placed.tolist()
 
 
 def test_the_rtp_fields_come_back_as_they_were_built():
@@ -125,7 +125,7 @@ def test_the_rtp_fields_come_back_as_they_were_built():
         ssrc=_SSRC,
     )
     block = frame.stamp(0)
-    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
     rtp = parse_rtp(block, sizes=sizes)
 
     assert (rtp.version == 2).all()
@@ -149,7 +149,7 @@ def test_three_frames_run_on_with_no_loss_and_three_frame_boundaries():
 
     sequences = SequenceTracker()
     frames = FrameTracker()
-    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
     stamps = []
     for index in range(3):
         block = frame.stamp(index)
@@ -183,7 +183,7 @@ def test_a_dropped_packet_leaves_a_hole_the_receive_path_can_see():
     sequences.observe(rtp.sequence, payload.extended_sequence)
     assert sequences.lost == 2
 
-    starts = raster_offset(video, payload.line, payload.offset)
+    starts = raster_offset(video, payload.line, payload.offset_samples)
     covered = np.zeros(video.height * line_bytes(video) // payload_size, dtype=np.int64)
     covered[starts // payload_size] = 1
     assert int((covered == 0).sum()) == 2
@@ -203,15 +203,15 @@ def test_an_interlaced_frame_round_trips_with_its_fields_intact():
     payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     block = frame.stamp(0)
-    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
 
     assert rtp.marker.sum() == 2, "the marker ends each field, not the frame"
-    assert payload.field.sum() == frame.packets // 2
+    assert payload.field.sum() == frame.packet_count // 2
     assert payload.line.max() == 539, "rows are numbered within the field"
-    assert fits_raster(video, payload.line, payload.offset).all()
+    assert fits_raster(video, payload.line, payload.offset_samples).all()
     # Section 6.1.3: one timestamp across a field, and the second field is a
     # half frame interval on — 90000 / 50 fields a second.
     assert sorted(set(rtp.timestamp.tolist())) == [0, 1800]
@@ -231,12 +231,12 @@ def test_an_odd_interlaced_height_places_every_descriptor_it_builds():
     )
     frame = FrameHeaders(video, payload_size=5, ssrc=_SSRC)
     block = frame.stamp(0)
-    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+    sizes = np.full(frame.packet_count, PACKET_HEADER_SIZE, dtype=np.int64)
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
     assert payload.line.size == 10
-    assert fits_raster(video, payload.line, payload.offset).all()
+    assert fits_raster(video, payload.line, payload.offset_samples).all()
 
 
 def test_the_emitted_offer_and_the_built_frame_describe_one_flow():

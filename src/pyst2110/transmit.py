@@ -1,18 +1,13 @@
 """Building a frame's headers once, and stamping them per frame.
 
 The RFC 3550 fixed header and the RFC 4175 payload header of every packet in
-a frame, laid out as one row per packet — the same shape the parses take
-(§spec:interface-shape). The layout repeats frame after frame and only two
-fields move, so the block is built once for a frame *shape* and stamped
+a frame, laid out as one row per packet — the shape the parses take
+(§spec:interface-shape). The block is built for a frame *shape* and stamped
+per frame, and no Python loop runs over packets in either
 (§spec:transmit-headers).
 
-Stamping is the hot path: a 4K flow is hundreds of thousands of packets a
-second, so both moving fields are written across the whole frame at once and
-no Python loop runs over packets here.
-
-No pixels. This says which octets of a frame buffer each packet carries and
-never carries them, which is the same boundary the receive path draws from
-the other side (§spec:scope-boundary).
+No pixels: this says which octets of a frame buffer each packet carries and
+never carries them (§spec:scope-boundary).
 """
 
 from __future__ import annotations
@@ -58,21 +53,21 @@ _MAX_SRD_LENGTH = _layout.U16_MODULUS - 1
 # wrapping. An index past what it holds is refused by name instead.
 _INT64_MAX = (1 << 63) - 1
 _FIELDS_PER_FRAME = 2
+# ST 2110-20 section 6.1.4: the extended sequence number carries "the 16 high
+# order bits of the extended 32-bit sequence number".
+_HIGH_HALF = 16
+_LOW_HALF_MASK = _layout.U16_MODULUS - 1
+_OCTET_MASK = 0xFF
+_OCTET_BITS = 8
 
 
 def max_payload_size(video: SdpVideo) -> int:
     """The largest sample data a packet may carry under this flow's UDP limit.
 
-    ``MAXUDP`` — and the Standard UDP Size Limit it defaults to — bounds the
-    whole UDP datagram, not the sample data inside it: SMPTE ST 2110-10
-    section 6.3 counts the UDP header, the RTP header and the payload header
-    within it. Subtracting them is what turns a declared limit into the
-    ``limit`` :func:`pyst2110.geometry.choose_payload_size` takes, which is a
-    payload size.
-
-    Passing ``video.max_udp`` to that function instead overstates the room by
-    28 octets, and a raster whose line divides in that gap yields packets over
-    the limit — which :class:`FrameHeaders` refuses.
+    ``MAXUDP`` bounds the whole datagram, so this subtracts the UDP, RTP and
+    payload headers SMPTE ST 2110-10 section 6.3 counts inside it. The result
+    is the ``limit`` :func:`pyst2110.geometry.choose_payload_size` takes,
+    which is a payload size (§spec:transmit-headers).
     """
     room = video.max_udp - UDP_HEADER_SIZE - PACKET_HEADER_SIZE
     if room <= 0:
@@ -99,9 +94,8 @@ class FrameHeaders:
     :func:`pyst2110.sdp.format_sdp` declares.
 
     **The block is reused.** :meth:`stamp` writes into the array it returned
-    last time and hands back the same object, because allocating a frame of
-    headers per frame is the one cost this design exists to avoid. A caller
-    holding two frames at once copies the first.
+    last time and hands back the same object, so a caller holding two frames
+    at once copies the first (§spec:transmit-headers).
     """
 
     def __init__(
@@ -115,74 +109,32 @@ class FrameHeaders:
     ) -> None:
         """Lay out the headers for one frame of this format.
 
-        Raises ``ValueError`` where the format and payload size cannot be put
-        on the wire: a sampling with no pgroup, a payload size that does not
-        tile a line or is not a whole number of pgroups or overruns the flow's
-        UDP limit, a raster with no rows or more than the row number field
-        holds, or a payload type or SSRC outside its field.
+        Raises ``ValueError`` where the format and payload size cannot go on
+        the wire; :func:`_validate` is where each refusal is named.
         """
-        group_bytes, _ = pgroup(video)
-        if payload_size % group_bytes:
-            raise ValueError(
-                f"a payload of {payload_size} octets is not a whole number of "
-                f"{group_bytes}-octet pgroups, which RFC 4175 requires an SRD "
-                f"length to be; see choose_payload_size()"
-            )
-        if payload_size > _MAX_SRD_LENGTH:
-            raise ValueError(
-                f"a payload of {payload_size} octets is past the "
-                f"{_MAX_SRD_LENGTH} the SRD Length field holds"
-            )
-        if video.width > _MAX_RASTER:
-            raise ValueError(
-                f"a width of {video.width} needs a sample offset past "
-                f"{_MAX_RASTER}, which is all the SRD Offset field holds "
-                f"below the Line Continuation bit"
-            )
-        per_line = packets_per_line(video, payload_size)
-        # ST 2110-10 section 6.3: "Senders shall not generate IP Datagrams
-        # containing UDP packet sizes larger than this limit."
-        if payload_size > max_payload_size(video):
-            raise ValueError(
-                f"a payload of {payload_size} octets makes a UDP size of "
-                f"{payload_size + PACKET_HEADER_SIZE + UDP_HEADER_SIZE}, past "
-                f"the {video.max_udp} this flow declares; size it with "
-                f"choose_payload_size(video, max_payload_size(video))"
-            )
-        validate_payload_type(payload_type)
-        if not 0 <= ssrc < _layout.U32_MODULUS:
-            raise ValueError(f"{ssrc} is not a 32-bit SSRC")
-        if not 0 <= initial_sequence < _layout.U32_MODULUS:
-            raise ValueError(f"{initial_sequence} is not a 32-bit sequence number")
-        if video.height <= 0:
-            raise ValueError(f"a height of {video.height} is not an image")
-        rows = rows_per_field(video)
-        if rows > _MAX_RASTER:
-            raise ValueError(
-                f"a height of {video.height} needs a row number past "
-                f"{_MAX_RASTER}, which is all the SRD Row Number field holds"
-            )
-
+        per_line, rows = _validate(
+            video, payload_size, payload_type, ssrc, initial_sequence
+        )
         self.video = video
         self.payload_size = payload_size
-        self.packets = packets_per_frame(video, payload_size)
+        self.packet_count = packets_per_frame(video, payload_size)
         self._initial_sequence = initial_sequence
-        self._index = np.arange(self.packets, dtype=np.int64)
+        self._index = np.arange(self.packet_count, dtype=np.int64)
         # The largest index whose sequence arithmetic stays inside int64.
-        self._last_frame = (_INT64_MAX - initial_sequence) // self.packets - 1
+        self._last_frame = (_INT64_MAX - initial_sequence) // self.packet_count - 1
 
         # Which field each packet belongs to, and which row within it. An
         # interlaced frame sends its fields in time order, first field first,
         # and numbers rows from the top of each (ST 2110-20 section 6.1.5).
-        split = rows * per_line if video.interlaced else self.packets
+        split = rows * per_line if video.interlaced else self.packet_count
         field = (self._index >= split).astype(np.int64)
         line = np.where(field == 1, self._index - split, self._index) // per_line
         self._field = field
 
-        # Where each packet starts within its row: as octets, and as the sample
-        # position the SRD Offset carries. RFC 4175 section 4.2 counts that
-        # offset in pixels — "increments by one for each pixel" — where the
-        # length beside it counts octets (§spec:geometry).
+        # Where each packet starts within its row, as the sample position the
+        # SRD Offset carries. RFC 4175 section 4.2 counts that offset in
+        # pixels — "increments by one for each pixel" — where the length
+        # beside it counts octets (§spec:geometry).
         offset_pixels = sample_offset(video, self._index % per_line * payload_size)
 
         #: Where in the frame buffer each packet's payload starts, in octets.
@@ -191,57 +143,71 @@ class FrameHeaders:
         #: second field sits below the like-numbered rows of the first, so
         #: field 1 row *r* is frame row 2r+1 (ST 2110-20 section 6.1.5).
         frame_row = line * _FIELDS_PER_FRAME + field if video.interlaced else line
-        self.frame_offset: NDArray[np.int64] = raster_offset(
+        self.frame_offset_octets: NDArray[np.int64] = raster_offset(
             video, frame_row, offset_pixels
         )
 
+        # Everything a stamp derives is allocated here beside the block, so
+        # the hot path writes through these and allocates nothing.
+        self._sequence = np.empty(self.packet_count, dtype=np.int64)
+        self._stamps = np.empty(self.packet_count, dtype=np.int64)
+        self._half = np.empty(self.packet_count, dtype=np.int64)
+        self._octets = np.empty(self.packet_count, dtype=np.int64)
+
         # The marker ends a frame, or a field when interlaced (section 6.1.2).
-        marker = np.zeros(self.packets, dtype=np.bool_)
+        marker = np.zeros(self.packet_count, dtype=np.bool_)
         marker[split - 1] = True
         marker[-1] = True
 
-        block = np.zeros((self.packets, PACKET_HEADER_SIZE), dtype=np.uint8)
+        block = np.zeros((self.packet_count, PACKET_HEADER_SIZE), dtype=np.uint8)
         block[:, 0] = _layout.VERSION_2
         block[:, 1] = np.where(marker, _layout.MARKER_MASK | payload_type, payload_type)
-        _put_u32(block, _layout.SSRC, np.full(self.packets, ssrc, dtype=np.int64))
+        _put_u32(
+            block,
+            _layout.SSRC,
+            np.full(self.packet_count, ssrc, dtype=np.int64),
+            self._half,
+            self._octets,
+        )
         _put_u16(
             block,
             _SRD_BASE + _layout.SRD_LENGTH,
-            np.full(self.packets, payload_size, np.int64),
+            np.full(self.packet_count, payload_size, np.int64),
+            self._octets,
         )
         _put_u16(
             block,
             _SRD_BASE + _layout.SRD_ROW,
             (line | field * _layout.FLAG_MASK).astype(np.int64),
+            self._octets,
         )
-        _put_u16(block, _SRD_BASE + _layout.SRD_OFFSET, offset_pixels)
+        _put_u16(block, _SRD_BASE + _layout.SRD_OFFSET, offset_pixels, self._octets)
         self._block = block
 
     def stamp(self, frame_index: int) -> NDArray[np.uint8]:
         """Write this frame's sequence numbers and timestamp into the block.
 
-        Both fields are derived from ``frame_index`` rather than carried
-        forward, so a transmitter's hundred-thousandth frame is as exact as
-        its first and a dropped frame does not shift what follows it.
+        Both derive from ``frame_index`` rather than from a running counter
+        (§spec:transmit-headers). The RTP sequence number is the low sixteen
+        bits of a thirty-two-bit counter and the extended sequence number the
+        high sixteen (§spec:rtp).
 
-        The RTP sequence number is the low sixteen bits of a thirty-two-bit
-        counter and the extended sequence number the high sixteen, which is
-        what keeps a flow fast enough to wrap the RTP field inside one frame
-        readable (§spec:rtp).
-
-        Returns the block — the same array every time, restamped in place.
+        Returns the block, restamped in place. Raises ``ValueError`` on an
+        index outside what the derivation holds.
         """
         if not 0 <= frame_index <= self._last_frame:
             raise ValueError(
                 f"{frame_index} is not a frame index this block can stamp, "
                 f"which runs to {self._last_frame}"
             )
-        sequence = (
-            self._initial_sequence + frame_index * self.packets + self._index
-        ) % _layout.U32_MODULUS
-        _put_u16(self._block, _layout.SEQUENCE, sequence & 0xFFFF)
-        _put_u16(self._block, _EXTENDED_SEQUENCE, sequence >> 16)
-        _put_u32(self._block, _layout.TIMESTAMP, self._timestamps(frame_index))
+        first = self._initial_sequence + frame_index * self.packet_count
+        np.add(self._index, first, out=self._sequence)
+        np.bitwise_and(self._sequence, _layout.U32_MODULUS - 1, out=self._sequence)
+        np.bitwise_and(self._sequence, _LOW_HALF_MASK, out=self._half)
+        _put_u16(self._block, _layout.SEQUENCE, self._half, self._octets)
+        np.right_shift(self._sequence, _HIGH_HALF, out=self._half)
+        _put_u16(self._block, _EXTENDED_SEQUENCE, self._half, self._octets)
+        self._write_timestamps(frame_index)
         return self._block
 
     def timestamp(self, frame_index: int, field_index: int = 0) -> int:
@@ -263,27 +229,106 @@ class FrameHeaders:
         ) // (_FIELDS_PER_FRAME * rate.numerator)
         return ticks % _layout.U32_MODULUS
 
-    def _timestamps(self, frame_index: int) -> NDArray[np.int64]:
+    def _write_timestamps(self, frame_index: int) -> None:
         """One timestamp per packet: constant over a progressive frame, and
         over each field of an interlaced one."""
         by_field = np.array(
             [self.timestamp(frame_index, field) for field in range(_FIELDS_PER_FRAME)],
             dtype=np.int64,
         )
-        return by_field[self._field]
+        np.take(by_field, self._field, out=self._stamps)
+        _put_u32(self._block, _layout.TIMESTAMP, self._stamps, self._half, self._octets)
 
 
-def _put_u16(block: NDArray[np.uint8], offset: int, values: NDArray[np.int64]) -> None:
+def _validate(
+    video: SdpVideo,
+    payload_size: int,
+    payload_type: int,
+    ssrc: int,
+    initial_sequence: int,
+) -> tuple[int, int]:
+    """Refuse a frame that cannot go on the wire, and return its geometry.
+
+    A sampling with no pgroup, a payload size that is not whole pgroups or
+    does not tile a line or overruns the flow's UDP limit or the SRD Length
+    field, a raster with no rows or past what the row and offset fields hold,
+    or a payload type, SSRC or initial sequence number outside its own field.
+
+    Returns the packets a line takes and the rows in the temporally first
+    field, which the checks compute on the way.
+    """
+    group_bytes, _ = pgroup(video)
+    if payload_size % group_bytes:
+        raise ValueError(
+            f"a payload of {payload_size} octets is not a whole number of "
+            f"{group_bytes}-octet pgroups, which RFC 4175 requires an SRD "
+            f"length to be; see choose_payload_size()"
+        )
+    if payload_size > _MAX_SRD_LENGTH:
+        raise ValueError(
+            f"a payload of {payload_size} octets is past the "
+            f"{_MAX_SRD_LENGTH} the SRD Length field holds"
+        )
+    if video.width > _MAX_RASTER:
+        raise ValueError(
+            f"a width of {video.width} needs a sample offset past "
+            f"{_MAX_RASTER}, which is all the SRD Offset field holds "
+            f"below the Line Continuation bit"
+        )
+    per_line = packets_per_line(video, payload_size)
+    # ST 2110-10 section 6.3: "Senders shall not generate IP Datagrams
+    # containing UDP packet sizes larger than this limit."
+    if payload_size > max_payload_size(video):
+        raise ValueError(
+            f"a payload of {payload_size} octets makes a UDP size of "
+            f"{payload_size + PACKET_HEADER_SIZE + UDP_HEADER_SIZE}, past "
+            f"the {video.max_udp} this flow declares; size it with "
+            f"choose_payload_size(video, max_payload_size(video))"
+        )
+    validate_payload_type(payload_type)
+    if not 0 <= ssrc < _layout.U32_MODULUS:
+        raise ValueError(f"{ssrc} is not a 32-bit SSRC")
+    if not 0 <= initial_sequence < _layout.U32_MODULUS:
+        raise ValueError(f"{initial_sequence} is not a 32-bit sequence number")
+    if video.height <= 0:
+        raise ValueError(f"a height of {video.height} is not an image")
+    rows = rows_per_field(video)
+    if rows > _MAX_RASTER:
+        raise ValueError(
+            f"a height of {video.height} needs a row number past "
+            f"{_MAX_RASTER}, which is all the SRD Row Number field holds"
+        )
+    return per_line, rows
+
+
+def _put_u16(
+    block: NDArray[np.uint8],
+    offset: int,
+    values: NDArray[np.int64],
+    octets: NDArray[np.int64],
+) -> None:
     """Write a big-endian 16-bit field into every packet's header.
 
     RFC 3550 section 5.1: "All integer fields are carried in network byte
-    order". Written across the whole frame at once, one column pair at a time.
+    order". Written across the whole frame at once, one column pair at a
+    time, through the caller's ``octets`` buffer so nothing is allocated.
     """
-    block[:, offset] = (values >> 8) & 0xFF
-    block[:, offset + 1] = values & 0xFF
+    np.right_shift(values, _OCTET_BITS, out=octets)
+    np.bitwise_and(octets, _OCTET_MASK, out=octets)
+    block[:, offset] = octets
+    np.bitwise_and(values, _OCTET_MASK, out=octets)
+    block[:, offset + 1] = octets
 
 
-def _put_u32(block: NDArray[np.uint8], offset: int, values: NDArray[np.int64]) -> None:
+def _put_u32(
+    block: NDArray[np.uint8],
+    offset: int,
+    values: NDArray[np.int64],
+    half: NDArray[np.int64],
+    octets: NDArray[np.int64],
+) -> None:
     """Write a big-endian 32-bit field into every packet's header."""
-    _put_u16(block, offset, (values >> 16) & 0xFFFF)
-    _put_u16(block, offset + 2, values & 0xFFFF)
+    np.right_shift(values, _HIGH_HALF, out=half)
+    _put_u16(block, offset, half, octets)
+    np.bitwise_and(values, _LOW_HALF_MASK, out=half)
+    _put_u16(block, offset + 2, half, octets)
