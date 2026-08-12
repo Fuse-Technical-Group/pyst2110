@@ -1,0 +1,33 @@
+name: CI
+
+# One job on a bare runner. Nothing here needs a NIC, a licence or a vendor
+# SDK — that is the whole point of the split (SPEC §spec:scope-boundary), and
+# a workflow that stayed green on a plain runner is the standing proof of it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned per the convention the flywheel workflows set; the trailing
+      # # vX.Y.Z comment is mandatory for human review.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      # uv reads .python-version and fetches the interpreter itself.
+      # tools/ci.sh is the same entry point developers run locally.
+      - run: bash tools/ci.sh

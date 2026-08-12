@@ -1,0 +1,29 @@
+name: Governance Lint
+
+# Calls notation's reusable governance-lint workflow: Vale prose linting over
+# SPEC.md and REQUIREMENTS.md, markdownlint-cli2 over the governance docs,
+# SPEC.md status-line validation, the README heading profile, and the
+# §slug heading-addressing grammar. Supersedes the hand-rolled lint-docs.yml
+# it replaced (pymarkdownlnt over the READMEs only).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# The called workflow declares none of its own and runs third-party actions on
+# mutable tags, so the token it gets is scoped here instead. Nothing it does
+# writes to the repository.
+permissions:
+  contents: read
+
+jobs:
+  # Job key is the status-check context prefix: this reports as
+  # `governance / lint`. Keep it `governance` so the required-check name is
+  # identical across the repositories that adopt notation governance-lint.
+  governance:
+    # Pinned to the commit behind notation--v0. notation's release tags use a
+    # notation--v* prefix, which Dependabot may not auto-track — bump manually
+    # if it does not.
+    uses: repentsinner/symphonize/.github/workflows/governance-lint.yml@b9d0a93f29de8e4a3c84f8ea2a5bd2a7b6fc31fd # notation--v0.2.6
+    with:
+      readme-type: library
