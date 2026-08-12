@@ -9,6 +9,7 @@ vectors are what tie either of them to the documents (§spec:testing).
 from __future__ import annotations
 
 from fractions import Fraction
+from typing import Any
 
 import pytest
 
@@ -186,14 +187,22 @@ def test_maxudp_is_the_senders_declared_limit_and_defaults_to_the_standard():
 # how). They are not this library's parse run backwards.
 
 _FLOW = SdpFlow("239.100.0.1", 20000, "192.168.100.2")
-_VIDEO = SdpVideo(
-    width=1920,
-    height=1080,
-    frame_rate=Fraction(60000, 1001),
-    depth=10,
-    sampling="YCbCr-4:2:2",
-    colorimetry="BT709",
-)
+
+
+def video(**overrides: Any) -> SdpVideo:
+    """The reference format, with whatever a case wants to differ."""
+    fields: dict[str, Any] = {
+        "width": 1920,
+        "height": 1080,
+        "frame_rate": Fraction(60000, 1001),
+        "depth": 10,
+        "sampling": "YCbCr-4:2:2",
+        "colorimetry": "BT709",
+    }
+    return SdpVideo(**(fields | overrides))
+
+
+_VIDEO = video()
 
 # RFC 4566 section 5: v=, o=, s= are REQUIRED and "MUST appear in exactly the
 # order given here", one time description follows, then the media section.
@@ -246,38 +255,37 @@ def test_every_required_media_type_parameter_is_present():
 
 def test_an_integer_frame_rate_is_a_single_decimal_number():
     """ST 2110-20 section 7.2 spells 25 as "25", not as "25/1"."""
-    video = SdpVideo(**(_fields() | {"frame_rate": Fraction(25)}))
-    assert _fmtp(format_sdp(_FLOW, video))["exactframerate"] == "25"
+    fmtp = _fmtp(format_sdp(_FLOW, video(frame_rate=Fraction(25))))
+    assert fmtp["exactframerate"] == "25"
 
 
 def test_a_non_integer_frame_rate_is_a_ratio_with_the_smallest_numerator():
     """Section 7.2 again: "utilizing the numerically smallest numerator"."""
-    video = SdpVideo(**(_fields() | {"frame_rate": Fraction(120000, 2002)}))
-    assert _fmtp(format_sdp(_FLOW, video))["exactframerate"] == "60000/1001"
+    fmtp = _fmtp(format_sdp(_FLOW, video(frame_rate=Fraction(120000, 2002))))
+    assert fmtp["exactframerate"] == "60000/1001"
 
 
 def test_interlace_is_a_bare_flag_present_only_when_interlaced():
     """ST 2110-20 section 7.3: absent means progressive, so it is not written
     with a value and not written at all for progressive video."""
     assert "interlace" not in _fmtp(format_sdp(_FLOW, _VIDEO))
-    video = SdpVideo(**(_fields() | {"interlaced": True}))
-    assert _fmtp(format_sdp(_FLOW, video))["interlace"] == ""
+    assert _fmtp(format_sdp(_FLOW, video(interlaced=True)))["interlace"] == ""
 
 
 def test_maxudp_is_written_only_when_it_is_not_the_standard_limit():
     """Section 7.3: "If absent, it indicates that the Standard UDP Size Limit
     is in use", so writing the default would say something it does not mean."""
     assert "MAXUDP" not in _fmtp(format_sdp(_FLOW, _VIDEO))
-    video = SdpVideo(**(_fields() | {"max_udp": 8960}))
-    assert _fmtp(format_sdp(_FLOW, video))["MAXUDP"] == "8960"
+    assert _fmtp(format_sdp(_FLOW, video(max_udp=8960)))["MAXUDP"] == "8960"
 
 
 def test_the_standard_number_follows_the_colorimetry():
     """Section 7.2: ST2110-20:2017 "unless the colorimetry value ALPHA or the
     TCS value ST2115LOGS3 are used", which need the 2022 revision."""
     assert _fmtp(format_sdp(_FLOW, _VIDEO))["SSN"] == "ST2110-20:2017"
-    video = SdpVideo(**(_fields() | {"colorimetry": "ALPHA"}))
-    assert _fmtp(format_sdp(_FLOW, video))["SSN"] == "ST2110-20:2022"
+    assert (
+        _fmtp(format_sdp(_FLOW, video(colorimetry="ALPHA")))["SSN"] == "ST2110-20:2022"
+    )
 
 
 def test_a_unicast_destination_carries_no_ttl():
@@ -332,17 +340,15 @@ def test_a_newline_in_the_session_name_cannot_forge_a_further_line():
 @pytest.mark.parametrize("sampling", ["", "YCbCr 4:2:2"])
 def test_a_sampling_that_is_not_one_token_is_refused(sampling: str):
     """ST 2110-20 section 7.1: "no whitespace within the name or value"."""
-    video = SdpVideo(**(_fields() | {"sampling": sampling}))
     with pytest.raises(ValueError, match="sampling"):
-        format_sdp(_FLOW, video)
+        format_sdp(_FLOW, video(sampling=sampling))
 
 
 @pytest.mark.parametrize(("field", "value"), [("width", 0), ("height", 32768)])
 def test_a_raster_outside_what_st_2110_permits_is_refused(field: str, value: int):
     """Section 7.2: width and height are "integers between 1 and 32767"."""
-    video = SdpVideo(**(_fields() | {field: value}))
     with pytest.raises(ValueError, match=field):
-        format_sdp(_FLOW, video)
+        format_sdp(_FLOW, video(**{field: value}))
 
 
 def test_a_port_outside_the_udp_range_is_refused():
@@ -381,20 +387,8 @@ def test_an_emitted_offer_parses_back_to_the_flow_it_described(flow: SdpFlow):
     ],
 )
 def test_an_emitted_offer_parses_back_to_the_format_it_described(overrides: dict):
-    video = SdpVideo(**(_fields() | overrides))
-    assert parse_video_format(format_sdp(_FLOW, video)) == video
-
-
-def _fields() -> dict:
-    """The reference format, as keyword arguments a case can override."""
-    return {
-        "width": 1920,
-        "height": 1080,
-        "frame_rate": Fraction(60000, 1001),
-        "depth": 10,
-        "sampling": "YCbCr-4:2:2",
-        "colorimetry": "BT709",
-    }
+    described = video(**overrides)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described
 
 
 def _fmtp(text: str) -> dict[str, str]:
