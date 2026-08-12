@@ -30,11 +30,15 @@ from pyst2110.sdp import SdpVideo as SdpVideo
 from pyst2110.sdp import format_sdp as format_sdp
 from pyst2110.sdp import parse_sdp as parse_sdp
 from pyst2110.sdp import parse_video_format as parse_video_format
+from pyst2110.transmit import PACKET_HEADER_SIZE as PACKET_HEADER_SIZE
+from pyst2110.transmit import FrameHeaders as FrameHeaders
 
 __all__ = [
     "FIXED_HEADER_SIZE",
+    "PACKET_HEADER_SIZE",
     "RTP_CLOCK_RATE",
     "STANDARD_UDP_SIZE_LIMIT",
+    "FrameHeaders",
     "FrameTracker",
     "PayloadHeaders",
     "RtpHeaders",
