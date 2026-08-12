@@ -64,7 +64,7 @@ frame = FrameHeaders(video, payload_size, ssrc=0x1234ABCD)
 for index in range(frames):
     headers = frame.stamp(index)   # (packets, 20) uint8, one row per packet
     ...                            # send each header with frame.frame_offset_octets
-offer = format_sdp(flow, video)    # the SDP describing what was just sent
+offer = format_sdp(flow, video, session_name="my sender")  # what was sent
 ```
 
 The offer carries the media type parameters ST 2110-20 section 7.2 and
@@ -73,6 +73,12 @@ which is the transport's and not this library's, so `sender_type=` is
 the caller's to set — it defaults to `2110TPN`. A multicast `flow` names
 its sender or passes `any_source=True`; see §spec:sdp for why that is a
 choice rather than a default.
+
+`session_name` defaults to the single space RFC 4566 section 5.3 prescribes
+for a session with no meaningful name — and at least one transmit SDK refuses
+it, so name the session where a sender will read the offer back. NVIDIA
+Rivermax reports `'x=<token>' format not found` and fails stream creation,
+accepting the same document once it is named.
 
 `frame_offset_octets` says which octets of the frame buffer each packet
 carries. Moving them is the consumer's, as on the receive side.
