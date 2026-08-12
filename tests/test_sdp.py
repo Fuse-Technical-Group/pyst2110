@@ -407,14 +407,45 @@ def test_a_unicast_destination_carries_no_ttl():
 def test_an_ipv6_multicast_destination_carries_no_ttl():
     """RFC 4566 section 5.7: "the TTL value MUST NOT be present for IPv6"."""
     flow = SdpFlow("ff3e::8000:1", 20000)
-    assert "c=IN IP6 ff3e::8000:1\r\n" in format_sdp(flow, _VIDEO)
+    text = format_sdp(flow, _VIDEO, any_source=True)
+    assert "c=IN IP6 ff3e::8000:1\r\n" in text
 
 
-def test_no_source_filter_means_the_line_is_absent_rather_than_empty():
-    text = format_sdp(SdpFlow("239.100.0.1", 20000), _VIDEO)
+def test_a_multicast_offer_that_names_no_sender_is_refused():
+    """ST 2110-10 section 8.4: a sender "should indicate the source address
+    information for streams within the SDP in order to support source-specific
+    multicast sessions by use of an inclusive source filter line". A transmit
+    offer has a sender and knows its address, so leaving the line out is
+    almost always a caller that forgot rather than one that meant it — and a
+    transmit SDK refuses the offer without it."""
+    with pytest.raises(ValueError, match="any_source"):
+        format_sdp(SdpFlow("239.100.0.1", 20000), _VIDEO)
+
+
+def test_an_any_source_multicast_offer_may_still_omit_the_filter():
+    """RFC 4570 section 3.1: "the default behavior when a source-filter
+    attribute is not provided in a session description is that all traffic
+    sent to the specified <connection-address> value should be accepted (i.e.,
+    from any source address)". That is a real session, so it stays reachable
+    — as a statement rather than as the default."""
+    text = format_sdp(SdpFlow("239.100.0.1", 20000), _VIDEO, any_source=True)
     assert "source-filter" not in text
     # With no sender to name, the origin falls back to the unspecified address.
     assert "o=- 0 0 IN IP4 0.0.0.0\r\n" in text
+
+
+def test_naming_a_sender_and_offering_the_group_to_any_source_contradict():
+    """The two say opposite things about who may send, so an offer that says
+    both says nothing this library will guess between."""
+    with pytest.raises(ValueError, match="any_source"):
+        format_sdp(_FLOW, _VIDEO, any_source=True)
+
+
+def test_a_unicast_offer_needs_no_source_filter():
+    """RFC 4570's filter selects among the senders to a group, and ST 2110-10
+    section 8.4 asks for the line "in order to support source-specific
+    multicast sessions". A unicast flow has no group and no such choice."""
+    assert "source-filter" not in format_sdp(SdpFlow("192.0.2.10", 20000), _VIDEO)
 
 
 def test_a_session_id_makes_the_origin_unique_when_a_caller_needs_it():
@@ -582,16 +613,19 @@ def test_a_payload_type_outside_the_seven_bit_field_is_refused():
 
 
 @pytest.mark.parametrize(
-    "flow",
+    ("flow", "any_source"),
     [
-        SdpFlow("239.100.0.1", 20000, "192.168.100.2"),
-        SdpFlow("239.100.0.1", 20000),
-        SdpFlow("192.0.2.10", 5004, "192.0.2.1"),
+        (SdpFlow("239.100.0.1", 20000, "192.168.100.2"), False),
+        (SdpFlow("239.100.0.1", 20000), True),
+        (SdpFlow("192.0.2.10", 5004, "192.0.2.1"), False),
+        (SdpFlow("192.0.2.10", 5004), False),
     ],
 )
-def test_an_emitted_offer_parses_back_to_the_flow_it_described(flow: SdpFlow):
+def test_an_emitted_offer_parses_back_to_the_flow_it_described(
+    flow: SdpFlow, any_source: bool
+):
     """The additional property, not the evidence: reader and writer agree."""
-    assert parse_sdp(format_sdp(flow, _VIDEO)) == flow
+    assert parse_sdp(format_sdp(flow, _VIDEO, any_source=any_source)) == flow
 
 
 @pytest.mark.parametrize(

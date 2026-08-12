@@ -300,6 +300,7 @@ def format_sdp(
     *,
     payload_type: int = _DEFAULT_PAYLOAD_TYPE,
     sender_type: str = SENDER_TYPE_NARROW,
+    any_source: bool = False,
     session_name: str = " ",
     session_id: int = 0,
     ttl: int = 64,
@@ -316,6 +317,15 @@ def format_sdp(
     describes the pacing of whatever puts the packets on the wire, which is
     not this library (§spec:scope-boundary), so the caller that owns the pacer
     owns the value; the default is documented in SPEC §spec:sdp.
+
+    A **multicast** offer says who may send. ``SdpFlow.source_ip`` names the
+    sender and writes the ``a=source-filter`` line ST 2110-10 section 8.4 asks
+    a sender for; ``any_source=True`` offers the group to any sender and
+    writes no such line, which RFC 4570 defines as accepting all of them.
+    Naming neither raises, and naming both raises: one of the two is a choice,
+    and a multicast offer that made it by accident is refused outright by at
+    least one transmit SDK. A unicast destination has no group to filter and
+    needs neither.
 
     ``session_id`` fills both the session identifier and its version in the
     ``o=`` line. It defaults to zero, which is repeatable rather than unique:
@@ -343,6 +353,18 @@ def format_sdp(
     _integer(session_id, "session id", 0, _MAX_SESSION_ID)
     if _LINE_TERMINATORS.intersection(session_name):
         raise ValueError("a session name cannot carry a line terminator")
+    if origin is not None and any_source:
+        raise ValueError(
+            f"the flow names {origin} as its sender and any_source offers the "
+            f"group to every sender; the offer cannot say both"
+        )
+    if origin is None and destination.is_multicast and not any_source:
+        raise ValueError(
+            f"a multicast offer for {destination} names no sender: set "
+            f"SdpFlow.source_ip to the sender's address, which ST 2110-10 "
+            f"section 8.4 asks a sender to signal, or pass any_source=True to "
+            f"offer the group to any sender"
+        )
 
     # RFC 4566 section 5.7: an IPv4 multicast address "MUST also have a time
     # to live (TTL) value present", and for IPv6 it "MUST NOT be present".
