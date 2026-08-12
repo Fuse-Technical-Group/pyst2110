@@ -336,6 +336,16 @@ def format_sdp(
     sessions passes its own. ``session_name`` defaults to the single space
     section 5.3 prescribes where a session has no meaningful name.
 
+    **Pass a name if a sender is going to read this back.** The default is
+    what the RFC prescribes, and at least one transmit SDK refuses it: NVIDIA
+    Rivermax (1.90.18) logs ``'x=<token>' format not found`` and fails stream
+    creation with ``RMX_INVALID_PARAM_MIX``, while accepting the same document
+    with any non-blank name — measured at 1080p60 and 2160p24, so it is the
+    name and not the format. The default stays as it is because this library
+    writes what the standards say and a receiver-facing offer is not wrong for
+    being unnamed; a caller driving a sender knows what its session is called
+    and is the one that should say so.
+
     Every caller-supplied value is validated before it is written, and an
     address is written in the form the address parse made of it rather than
     the form it arrived in. An SDP is line-structured, so a value carrying a
