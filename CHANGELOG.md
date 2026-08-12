@@ -1,3 +1,10 @@
+## [0.3.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.3.0...v0.3.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **sdp:** make a sender's offer conform to ST 2110-21 and RFC 4570 ([#2](https://github.com/Fuse-Technical-Group/pyst2110/issues/2)) ([6e90a12](https://github.com/Fuse-Technical-Group/pyst2110/commit/6e90a121dfd94f7a4fe59c7752e1cb403631bf8b))
+
 # [0.3.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.2.0...v0.3.0) (2026-08-12)
 
 
