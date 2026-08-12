@@ -110,7 +110,11 @@ class FrameHeaders:
         """Lay out the headers for one frame of this format.
 
         Raises ``ValueError`` where the format and payload size cannot go on
-        the wire; :func:`_validate` is where each refusal is named.
+        the wire: a sampling with no pgroup, a payload size that is not whole
+        pgroups or does not tile a line or overruns the flow's UDP limit or
+        the SRD Length field, a raster with no rows or past what the row and
+        offset fields hold, or a payload type, SSRC or initial sequence number
+        outside its own field.
         """
         per_line, rows = _validate(
             video, payload_size, payload_type, ssrc, initial_sequence
@@ -214,12 +218,9 @@ class FrameHeaders:
         """The RTP timestamp this frame's field carries.
 
         The 90 kHz clock of ST 2110-20 section 6.1.3 sampled at the frame's
-        own rate, in exact integer arithmetic: a rate of 60000/1001 advances
-        1501.5 ticks a frame, and computing from the index truncates each
-        frame's own value rather than accumulating the half tick as an error.
-
-        An interlaced frame carries a timestamp per field, section 6.1.3
-        requiring one value across a field rather than across the frame.
+        own rate, in exact integer arithmetic (§spec:transmit-headers). An
+        interlaced frame carries one per field, section 6.1.3 requiring a
+        value across a field rather than across a frame.
         """
         rate = self.video.frame_rate
         ticks = (
@@ -249,13 +250,9 @@ def _validate(
 ) -> tuple[int, int]:
     """Refuse a frame that cannot go on the wire, and return its geometry.
 
-    A sampling with no pgroup, a payload size that is not whole pgroups or
-    does not tile a line or overruns the flow's UDP limit or the SRD Length
-    field, a raster with no rows or past what the row and offset fields hold,
-    or a payload type, SSRC or initial sequence number outside its own field.
-
-    Returns the packets a line takes and the rows in the temporally first
-    field, which the checks compute on the way.
+    :meth:`FrameHeaders.__init__` names what each refusal is. Returns the
+    packets a line takes and the rows in the temporally first field, which
+    the checks compute on the way and the layout then needs.
     """
     group_bytes, _ = pgroup(video)
     if payload_size % group_bytes:
