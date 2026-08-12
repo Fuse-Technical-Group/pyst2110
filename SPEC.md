@@ -33,9 +33,9 @@ its payload lands. The consumer performs the move.
 
 *Why a separate library rather than either neighbour*: a transport binding
 that carried RFC 4175 would make a vendor SDK the dependency for parsing a
-capture file, and where that SDK is licensed — as Rivermax is — it would
-trap open protocol work behind a licence with no claim on it, testable only
-where a NIC and a licence are. A consumer that carried it would take on a
+capture file, and where that SDK is licensed — as the vendor ones are — it
+would trap open protocol work behind a licence with no claim on it, testable
+only where a NIC and a licence are. A consumer that carried it would take on a
 transport's vocabulary to reach its own pixels, and the next consumer would
 write it again.
 
