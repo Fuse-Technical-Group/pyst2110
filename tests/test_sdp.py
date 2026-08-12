@@ -542,13 +542,30 @@ def test_the_address_written_is_the_one_that_was_parsed():
     assert "a=source-filter: incl IN IP6 ff3e::8000:1 2001:db8::1\r\n" in text
 
 
-def test_a_source_filter_over_two_families_names_neither():
-    """RFC 4570 section 3 allows the wildcard address type, which a v4
-    destination filtering a v6 source needs: naming either family describes
-    the other address wrongly."""
-    flow = SdpFlow("239.100.0.1", 20000, "2001:db8::1")
-    assert "a=source-filter: incl IN * 239.100.0.1 2001:db8::1\r\n" in format_sdp(
-        flow, _VIDEO
+@pytest.mark.parametrize(
+    "flow",
+    [
+        SdpFlow("239.100.0.1", 20000, "2001:db8::1"),
+        SdpFlow("ff3e::8000:1", 20000, "192.168.100.2"),
+    ],
+)
+def test_a_source_filter_spanning_two_address_families_is_refused(flow: SdpFlow):
+    """RFC 4570 section 3 gives the filter one <address-types> for both
+    addresses, and section 3.1 bounds the wildcard that would cover two:
+    "When the <addrtype> value is the '*' wildcard, the <dest-address> MUST be
+    either an FQDN or '*' (i.e., it MUST NOT be an IPv4 or IPv6 address)".
+    This library writes IP literals, so the mixed pair has no legal spelling —
+    and no packet either, a v6 sender reaching no v4 group."""
+    with pytest.raises(ValueError, match="address famil"):
+        format_sdp(flow, _VIDEO)
+
+
+def test_a_source_filter_names_the_one_family_both_addresses_share():
+    """RFC 4570 section 3: <address-types> "identifies the address family, and
+    for the purpose of this document may be either <addrtype> value 'IP4' or
+    'IP6'". ST 2110-10 section 8.4's example is the IP4 form."""
+    assert "a=source-filter: incl IN IP4 239.100.0.1 192.168.100.2\r\n" in format_sdp(
+        _FLOW, _VIDEO
     )
 
 

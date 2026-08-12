@@ -353,6 +353,13 @@ def format_sdp(
     _integer(session_id, "session id", 0, _MAX_SESSION_ID)
     if _LINE_TERMINATORS.intersection(session_name):
         raise ValueError("a session name cannot carry a line terminator")
+    if origin is not None and origin.version != destination.version:
+        raise ValueError(
+            f"the sender {origin} and the destination {destination} are in "
+            f"different address families, which no flow is: RFC 4570 permits "
+            f"the '*' address type only where the destination is an FQDN, so "
+            f"a filter over both has no spelling"
+        )
     if origin is not None and any_source:
         raise ValueError(
             f"the flow names {origin} as its sender and any_source offers the "
@@ -380,8 +387,7 @@ def format_sdp(
     ]
     if origin is not None:
         lines.append(
-            f"a=source-filter: incl IN {_filter_addrtype(destination, origin)} "
-            f"{destination} {origin}"
+            f"a=source-filter: incl IN {_addrtype(destination)} {destination} {origin}"
         )
     lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
     lines.append(f"a=fmtp:{payload_type} {_media_type_parameters(video, sender_type)}")
@@ -511,21 +517,6 @@ def _address(text: str, role: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addr
 def _addrtype(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
     """RFC 4566's ``<addrtype>``, which the address family decides."""
     return "IP4" if address.version == 4 else "IP6"
-
-
-def _filter_addrtype(
-    destination: ipaddress.IPv4Address | ipaddress.IPv6Address,
-    source: ipaddress.IPv4Address | ipaddress.IPv6Address,
-) -> str:
-    """The ``<addrtype>`` of ``a=source-filter``, which covers both addresses.
-
-    RFC 4570 section 3 allows the wildcard where the filter spans more than
-    one family, which a v4 destination filtering a v6 source does: naming
-    either family would describe the other address wrongly.
-    """
-    if destination.version == source.version:
-        return _addrtype(destination)
-    return "*"
 
 
 def _unspecified_host(
