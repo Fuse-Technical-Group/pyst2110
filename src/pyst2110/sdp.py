@@ -29,9 +29,10 @@ __all__ = [
 #: rate for streams compliant to this standard shall be 90 kHz."
 RTP_CLOCK_RATE = 90_000
 
-#: The Standard UDP Size Limit of SMPTE ST 2110-10, which a 1500-octet MTU
-#: leaves after the IP and UDP headers. ST 2110-20 section 7.3 makes an absent
-#: ``MAXUDP`` mean exactly this, so it is the default and never written out.
+#: The Standard UDP Size Limit of SMPTE ST 2110-10: what a 1500-octet MTU
+#: leaves after a 40-octet IPv6 header, counting the 8-octet UDP header within
+#: itself. ST 2110-20 section 7.3 makes an absent ``MAXUDP`` mean exactly this,
+#: so it is the default and never written out.
 STANDARD_UDP_SIZE_LIMIT = 1460
 
 # ST 2110-20 section 6.3.2. The geometry this library computes tiles a line
@@ -59,6 +60,20 @@ _MAX_PORT = 65535
 _MAX_PAYLOAD_TYPE = 127
 _DEFAULT_PAYLOAD_TYPE = 96
 _MAX_TTL = 255
+# A UDP datagram's own length field is sixteen bits, so no MAXUDP above this
+# describes a datagram that can exist.
+_MAX_UDP_SIZE = 65535
+# RFC 4566 section 5.2 wants the session id "based on a 64-bit NTP timestamp".
+_MAX_SESSION_ID = (1 << 64) - 1
+# ST 2110-20 section 7.4.2 lists the depths a sender may declare. 16f is
+# half-float and not modelled here (§road:future).
+_DEPTHS = (8, 10, 12, 16)
+
+# Every character ``str.splitlines()`` starts a new line at. RFC 4566 ends a
+# record with CRLF alone, but a reader that splits the document into lines —
+# as :func:`parse_sdp` does — begins a record at any of these, so a caller's
+# string carrying one declares a record of its own.
+_LINE_TERMINATORS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 @dataclass(frozen=True)
@@ -268,10 +283,12 @@ def format_sdp(
     sessions passes its own. ``session_name`` defaults to the single space
     section 5.3 prescribes where a session has no meaningful name.
 
-    Every caller-supplied string is validated before it is written. An SDP is
-    line-structured, so a name carrying a newline would otherwise declare
-    lines of its own, and a malformed address describes a flow that cannot be
-    joined. Raises ``ValueError`` naming the field.
+    Every caller-supplied value is validated before it is written, and an
+    address is written in the form the address parse made of it rather than
+    the form it arrived in. An SDP is line-structured, so a value carrying a
+    line terminator would otherwise declare records of its own, and a
+    malformed address describes a flow that cannot be joined. Raises
+    ``ValueError`` naming the field.
 
     What is not written: the ``a=ts-refclk:`` and ``a=mediaclk:`` attributes
     of ST 2110-10. They name a PTP domain and a media clock this library does
@@ -280,31 +297,29 @@ def format_sdp(
     """
     destination = _address(flow.destination_ip, "destination")
     origin = _address(flow.source_ip, "source") if flow.source_ip else None
-    if not 0 < flow.destination_port <= _MAX_PORT:
-        raise ValueError(f"{flow.destination_port} is not a UDP port")
-    if not 0 <= payload_type <= _MAX_PAYLOAD_TYPE:
-        raise ValueError(f"{payload_type} is not a 7-bit RTP payload type")
-    if not 0 <= ttl <= _MAX_TTL:
-        raise ValueError(f"a TTL of {ttl} is outside RFC 4566's range of 0-255")
-    if any(character in session_name for character in "\r\n"):
-        raise ValueError("a session name cannot carry a line ending")
+    _integer(flow.destination_port, "port", 1, _MAX_PORT)
+    _integer(payload_type, "payload type", 0, _MAX_PAYLOAD_TYPE)
+    _integer(ttl, "TTL", 0, _MAX_TTL)
+    _integer(session_id, "session id", 0, _MAX_SESSION_ID)
+    if _LINE_TERMINATORS.intersection(session_name):
+        raise ValueError("a session name cannot carry a line terminator")
 
     # RFC 4566 section 5.7: an IPv4 multicast address "MUST also have a time
     # to live (TTL) value present", and for IPv6 it "MUST NOT be present".
     scope = f"/{ttl}" if destination.version == 4 and destination.is_multicast else ""
+    host = str(origin) if origin else _unspecified_host(destination)
     lines = [
         "v=0",
-        f"o=- {session_id} {session_id} IN {_addrtype(origin or destination)} "
-        f"{flow.source_ip or _unspecified_host(destination)}",
+        f"o=- {session_id} {session_id} IN {_addrtype(origin or destination)} {host}",
         f"s={session_name}",
         "t=0 0",
         f"m=video {flow.destination_port} RTP/AVP {payload_type}",
-        f"c=IN {_addrtype(destination)} {flow.destination_ip}{scope}",
+        f"c=IN {_addrtype(destination)} {destination}{scope}",
     ]
-    if flow.source_ip:
+    if origin is not None:
         lines.append(
-            f"a=source-filter: incl IN {_addrtype(destination)} "
-            f"{flow.destination_ip} {flow.source_ip}"
+            f"a=source-filter: incl IN {_filter_addrtype(destination, origin)} "
+            f"{destination} {origin}"
         )
     lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
     lines.append(f"a=fmtp:{payload_type} {_media_type_parameters(video)}")
@@ -324,11 +339,15 @@ def _media_type_parameters(video: SdpVideo) -> str:
     """
     _token(video.sampling, "sampling")
     _token(video.colorimetry, "colorimetry")
-    for name, value in (("width", video.width), ("height", video.height)):
-        if not 0 < value <= _MAX_RASTER:
-            raise ValueError(
-                f"a {name} of {value} is outside ST 2110-20's range of 1-{_MAX_RASTER}"
-            )
+    _integer(video.width, "width", 1, _MAX_RASTER)
+    _integer(video.height, "height", 1, _MAX_RASTER)
+    _integer(video.depth, "depth", _DEPTHS[0], _DEPTHS[-1])
+    if video.depth not in _DEPTHS:
+        raise ValueError(
+            f"a depth of {video.depth} is not one of the {list(_DEPTHS)} bits "
+            f"ST 2110-20 section 7.4.2 lists"
+        )
+    _integer(video.max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
     if video.frame_rate <= 0:
         raise ValueError(f"an exactframerate of {video.frame_rate} is not a rate")
 
@@ -376,17 +395,57 @@ def _token(value: str, name: str) -> None:
         raise ValueError(f"{name}={value!r} is not a single ST 2110-20 token")
 
 
+def _integer(value: object, name: str, low: int, high: int) -> None:
+    """Refuse a value that is not a whole number inside the range named.
+
+    :class:`SdpFlow` and :class:`SdpVideo` are plain dataclasses, so an
+    annotation of ``int`` is a promise and not a check: a string reaches the
+    document verbatim, and one carrying a semicolon or a line terminator
+    forges a media type parameter or a record of its own.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"a {name} of {value!r} is not a whole number")
+    if not low <= value <= high:
+        raise ValueError(f"a {name} of {value} is outside the range {low}-{high}")
+
+
 def _address(text: str, role: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
-    """Parse an address, so that what is written is one and only one."""
+    """Parse an address, so that what is written is one and only one.
+
+    The parsed object is what the document carries, never the caller's own
+    string. CPython accepts an IPv6 scope identifier made of any characters
+    but ``%`` — carriage returns and newlines among them — so writing the
+    input back would forge records with real CRLFs, past a strict RFC 4566
+    reader and not merely past a line split. A scope names a local interface
+    and means nothing to a peer, so it is refused rather than stripped.
+    """
     try:
-        return ipaddress.ip_address(text)
+        address = ipaddress.ip_address(text)
     except ValueError as exc:
         raise ValueError(f"the {role} {text!r} is not an IP address") from exc
+    if isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None:
+        raise ValueError(f"the {role} {text!r} carries a scope identifier")
+    return address
 
 
 def _addrtype(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
     """RFC 4566's ``<addrtype>``, which the address family decides."""
     return "IP4" if address.version == 4 else "IP6"
+
+
+def _filter_addrtype(
+    destination: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    source: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str:
+    """The ``<addrtype>`` of ``a=source-filter``, which covers both addresses.
+
+    RFC 4570 section 3 allows the wildcard where the filter spans more than
+    one family, which a v4 destination filtering a v6 source does: naming
+    either family would describe the other address wrongly.
+    """
+    if destination.version == source.version:
+        return _addrtype(destination)
+    return "*"
 
 
 def _unspecified_host(

@@ -229,9 +229,20 @@ grandmaster and a media clock this library has no model of, and a
 synchronisation claimed but not held is worse than one left to the caller
 that owns it (§road:future).
 
-Strings a caller supplies are validated before they are written, an SDP
-being line-structured: a session name carrying a newline would otherwise
-declare lines of its own.
+Every value a caller supplies is validated before it is written, an SDP
+being line-structured. The bound is not CRLF but every character a line
+split starts a record at: RFC 4566 ends a record with two of them and a
+reader splitting the document begins one at ten, and the reader is what a
+forged record has to fool. Addresses are written as the address parse
+rendered them, never as they arrived — validating one string and writing
+another is the gap an injection goes through — and an IPv6 scope
+identifier, which accepts nearly any character and names an interface no
+peer shares, is refused rather than stripped. Integers are checked as
+integers: a dataclass annotation is a promise, not a check.
+
+A source filter names one address type for two addresses. RFC 4570 allows
+the wildcard where they differ in family, which is what a v4 destination
+filtering a v6 sender gets.
 
 ## Transmit headers §spec:transmit-headers
 

@@ -330,11 +330,120 @@ def test_an_address_that_is_not_one_is_refused(field: str, value: str):
         format_sdp(flow, _VIDEO)
 
 
-def test_a_newline_in_the_session_name_cannot_forge_a_further_line():
-    """A caller's string is data, not more SDP: an emitter that let a newline
-    through would let a session name declare its own media section."""
+# Every character ``str.splitlines()`` starts a new line at. RFC 4566 ends a
+# record with CRLF, but a reader that splits the document into lines — as
+# parse_sdp does — begins a record at any of these.
+_LINE_TERMINATORS = [
+    "\n",
+    "\r",
+    "\v",
+    "\f",
+    "\x1c",
+    "\x1d",
+    "\x1e",
+    "\x85",
+    "\u2028",
+    "\u2029",
+]
+
+
+def test_the_terminators_tested_are_the_ones_a_line_split_breaks_on():
+    """The list is the property rather than a transcription: a character a
+    split starts a line at is one a caller's string can forge a record with."""
+    breaks = [one for one in _LINE_TERMINATORS if len(f"a{one}b".splitlines()) > 1]
+    assert breaks == _LINE_TERMINATORS
+    assert len(_LINE_TERMINATORS) == 10
+
+
+@pytest.mark.parametrize("terminator", _LINE_TERMINATORS)
+def test_no_line_terminator_in_a_session_name_can_forge_a_record(terminator: str):
+    """A caller's string is data, not more SDP. Refusing CR and LF alone
+    leaves eight characters that redirect the whole flow: a name carrying one
+    emits an s= line that reads back as another connection and media section.
+    """
+    hostile = f"x{terminator}c=IN IP4 6.6.6.6{terminator}m=video 5004 RTP/AVP 96"
     with pytest.raises(ValueError, match="session name"):
-        format_sdp(_FLOW, _VIDEO, session_name="x\r\nm=video 1 RTP/AVP 96")
+        format_sdp(_FLOW, _VIDEO, session_name=hostile)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("destination_ip", "ff3e::8000:1%\r\nc=IN IP4 6.6.6.6\r\na=x"),
+        # No '/' — an address parse refuses that one character and nothing
+        # else of a scope, and a media line needs none of it to be read.
+        ("source_ip", "fe80::1%\r\nc=IN IP4 6.6.6.6\r\nm=video 5004 x 96"),
+    ],
+)
+def test_an_address_carrying_a_scope_identifier_is_refused(field: str, value: str):
+    """CPython accepts any scope identifier free of '%', carriage returns and
+    newlines included, so writing the caller's own string forges records with
+    genuine CRLFs — past a strict RFC 4566 reader, not merely past a line
+    split. A scope names a local interface and has no meaning in an offer.
+    """
+    flow = SdpFlow(
+        **(
+            {"destination_ip": "239.100.0.1", "destination_port": 20000}
+            | {field: value}
+        )
+    )
+    with pytest.raises(ValueError, match="scope"):
+        format_sdp(flow, _VIDEO)
+
+
+def test_the_address_written_is_the_one_that_was_parsed():
+    """Validating one string and writing another is the gap an injection goes
+    through, so what reaches the document is what the address parse made."""
+    flow = SdpFlow("FF3E:0000:0000:0000:0000:0000:8000:0001", 20000, "2001:0DB8::0001")
+    text = format_sdp(flow, _VIDEO)
+    assert "c=IN IP6 ff3e::8000:1\r\n" in text
+    assert "o=- 0 0 IN IP6 2001:db8::1\r\n" in text
+    assert "a=source-filter: incl IN IP6 ff3e::8000:1 2001:db8::1\r\n" in text
+
+
+def test_a_source_filter_over_two_families_names_neither():
+    """RFC 4570 section 3 allows the wildcard address type, which a v4
+    destination filtering a v6 source needs: naming either family describes
+    the other address wrongly."""
+    flow = SdpFlow("239.100.0.1", 20000, "2001:db8::1")
+    assert "a=source-filter: incl IN * 239.100.0.1 2001:db8::1\r\n" in format_sdp(
+        flow, _VIDEO
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        # A depth that forges fmtp parameters: reparsed, MAXUDP reads 9000 and
+        # the packing mode reads Block, changing the sizing a peer computes.
+        ("depth", "10; MAXUDP=9000; PM=2110BPM", "depth"),
+        ("depth", "10\r\nc=IN IP4 6.6.6.6", "depth"),
+        # ST 2110-20 section 7.4.2 lists the depths a sender may declare.
+        ("depth", 9, "depth"),
+        # The fmtp line is the document's last, so a c= forged here wins under
+        # the last-wins reading a session-level connection line gets.
+        ("max_udp", "9000\r\nc=IN IP4 6.6.6.6", "MAXUDP"),
+        ("max_udp", 0, "MAXUDP"),
+        ("width", "1920\r\nc=IN IP4 6.6.6.6", "width"),
+        ("height", "1080\r\nc=IN IP4 6.6.6.6", "height"),
+    ],
+)
+def test_a_format_value_that_is_not_the_integer_it_claims_is_refused(
+    field: str, value: object, message: str
+):
+    """``SdpVideo`` is a plain dataclass, so an annotation of ``int`` is a
+    promise and not a check: a string reaches the fmtp line verbatim."""
+    with pytest.raises(ValueError, match=message):
+        format_sdp(_FLOW, video(**{field: value}))
+
+
+@pytest.mark.parametrize("session_id", ["1 1 IN IP4 6.6.6.6\r\nc=IN IP4 6.6.6.6", -1])
+def test_a_session_id_that_is_not_a_whole_number_is_refused(session_id: object):
+    """It fills the o= line's identifier and its version. A string forges an
+    o= and a c= near the top of the document; a negative writes a malformed
+    origin with no error at all."""
+    with pytest.raises(ValueError, match="session id"):
+        format_sdp(_FLOW, _VIDEO, session_id=session_id)
 
 
 @pytest.mark.parametrize("sampling", ["", "YCbCr 4:2:2"])
