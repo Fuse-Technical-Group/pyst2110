@@ -33,9 +33,9 @@ its payload lands. The consumer performs the move.
 
 *Why a separate library rather than either neighbour*: a transport binding
 that carried RFC 4175 would make a vendor SDK the dependency for parsing a
-capture file, and where that SDK is licensed — as Rivermax is — it would
-trap open protocol work behind a licence with no claim on it, testable only
-where a NIC and a licence are. A consumer that carried it would take on a
+capture file, and where that SDK is licensed — as the vendor ones are — it
+would trap open protocol work behind a licence with no claim on it, testable
+only where a NIC and a licence are. A consumer that carried it would take on a
 transport's vocabulary to reach its own pixels, and the next consumer would
 write it again.
 
@@ -186,6 +186,13 @@ packets per frame, and the largest payload size that divides a line without
 a remainder. A transmitter needs all four to size what it sends; a receiver
 needs line length to place what it gets.
 
+The placement itself is here too, and is one function rather than an
+expression each caller repeats: a row and a sample position resolved into an
+octet offset in a frame buffer. It is the library's central output, computed
+identically on both paths, and the scaling runs in both directions — a
+receiver turns a sample position into octets, a sender turns the octets a
+packet carries into the position that names them.
+
 That payload size is searched over pgroups per packet rather than over
 bytes: both RFC 4175 and ST 2110-20 require a segment length be a multiple
 of the pgroup, and a divisor of the line length need not be one. One pgroup
@@ -196,8 +203,11 @@ Scaling a sample position by the pgroup cannot tell a position inside the
 image from one past it — both scale — so a mask says which descriptors name
 a place inside the raster, row inside the image and sample position inside
 the row, and the conversion is documented as requiring it. An interlaced
-flow numbers rows within a field, so the row bound there is half the
-frame's height (§spec:payload-header).
+flow numbers rows within a field, so the row bound there is the first
+field's row count (§spec:payload-header) — which an odd height makes one
+more than half, section 6.1.5 giving the temporally first field the extra
+line. One function computes it, and the receive bound and the transmit
+split both call it rather than each halving for themselves.
 
 4:2:0 sampling is refused rather than approximated. Its pgroups span two
 sample rows, so a line is not a whole number of them and none of the
@@ -205,34 +215,88 @@ arithmetic above holds.
 
 ## SDP §spec:sdp
 
-*Status: in progress*
+*Status: complete*
 
 Enough of RFC 4566 and ST 2110-20's `a=fmtp:` to name a flow — connection
 address, media port, source filter — and its video format: width, height,
-frame rate, sampling, depth, interlace, and the sender's maximum UDP
-payload.
+frame rate, sampling, depth, colorimetry, interlace, and the sender's
+maximum UDP size.
 
 Parsing and emitting are both here, because a receiver reads an SDP it is
 handed and a transmitter is configured by one it produces. The video format
 it yields is what §spec:geometry computes from.
 
 Colorimetry is carried through, not interpreted. What a consumer does with
-`BT.2020` is its own concern; this library records which token the SDP said.
+`BT2020` is its own concern; this library records which token the SDP said,
+and ST 2110-20 has a token for a colorimetry nobody stated.
+
+A parameter whose absence carries meaning is written only where it differs
+from that meaning. An absent `MAXUDP` *is* the standard limit, so writing
+the default would claim a limit was negotiated when none was.
+
+The ST 2110-10 clock attributes are not written. They name a PTP
+grandmaster and a media clock this library has no model of, and a
+synchronisation claimed but not held is worse than one left to the caller
+that owns it (§road:future).
+
+Every value a caller supplies is validated before it is written, an SDP
+being line-structured. The bound is not CRLF but every character a line
+split starts a record at: RFC 4566 ends a record with two of them and a
+reader splitting the document begins one at ten, and the reader is what a
+forged record has to fool. Addresses are written as the address parse
+rendered them, never as they arrived — validating one string and writing
+another is the gap an injection goes through — and an IPv6 scope
+identifier, which accepts nearly any character and names an interface no
+peer shares, is refused rather than stripped. Integers are checked as
+integers: a dataclass annotation is a promise, not a check.
+
+A source filter names one address type for two addresses. RFC 4570 allows
+the wildcard where they differ in family, which is what a v4 destination
+filtering a v6 sender gets.
 
 ## Transmit headers §spec:transmit-headers
 
-*Status: not started*
+*Status: complete*
 
-Building the header block for a frame: RTP headers with the payload type,
-SSRC and marker bit set on the last packet, and RFC 4175 payload headers
-whose line numbers and offsets walk the raster. Built once for a frame
-shape and stamped per frame with its sequence numbers and media timestamp,
-because the layout repeats and only two fields move.
+The header block for a frame: RTP headers carrying the payload type, SSRC
+and the marker that ends a frame, and RFC 4175 payload headers whose line
+numbers and offsets walk the raster. Built once for a frame shape and
+stamped per frame, because the layout repeats and only two fields move.
 
 The **media timestamp** is the RTP clock — 90 kHz for video — sampled at
-the frame's own rate, which is what a receiver locks to. Deriving it from a
-frame index rather than a wall clock keeps a transmitter's timestamps exact
-across arbitrary run lengths.
+the frame's own rate, which is what a receiver locks to. Both it and the
+sequence number derive from a frame index rather than from a running
+counter, so a transmitter's hundred-thousandth frame is as exact as its
+first: a rate of 60000/1001 advances a half tick a frame, which
+accumulating turns into drift and computing from an index does not.
+
+One SRD header a packet. A payload size that divides a line never straddles
+a row, so the continuation bit stays clear — ST 2110-20's General Packing
+Mode, and what the emitted offer declares (§road:future).
+
+The block is **reused**: stamping writes into the array it returned last
+time. Allocating a frame of headers per frame is the cost the split between
+building and stamping exists to avoid, so a caller holding two frames at
+once is the one that copies. Every array a stamp derives on the way is
+allocated beside the block for the same reason — a claim about allocation
+that the stamp then made per call would be worth less than none.
+
+Every value that reaches a header is bounded against the bits that hold it,
+and bounded identically wherever it enters. A width past the SRD Offset's
+fifteen sets the Line Continuation bit and announces a segment the packet
+never carried — which this library's own parse then reads out of sample
+data — and a payload past the SRD Length's sixteen declares less than it
+sends. One parameter has no two answers, so an offer read in is checked
+where an offer written out is.
+
+A declared UDP limit bounds the datagram, not the sample data inside it.
+Turning one into the other is a subtraction of the headers, and getting it
+wrong overruns the limit on exactly those rasters whose lines divide in the
+gap — so the conversion is named rather than left to a caller's arithmetic.
+
+Interlace is carried rather than refused, the receive path already
+modelling it: the marker ends each field, each field carries its own
+timestamp, and row numbers restart within a field.
 
 ## Testing §spec:testing
 
@@ -247,6 +311,12 @@ standards' own field diagrams, not against this library's own writer.
 Round-tripping the writer through the reader proves they agree with each
 other and nothing about either agreeing with the wire; both are tested
 against fixed vectors, and the round trip is an additional property.
+
+Which cases carry a vector follows from that: a format verified only through
+the round trip is a format neither side is tied to the documents for. So a
+raster small enough to work out on paper, the interlaced layout, and the
+target format each have one, the last as named packets of a frame too large
+to write out whole.
 
 Captures from real senders are the strongest evidence available without a
 NIC. Where a fixture is taken off the wire its provenance is recorded

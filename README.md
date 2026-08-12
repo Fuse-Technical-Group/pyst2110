@@ -1,7 +1,8 @@
 # pyst2110
 
-SMPTE ST 2110 protocol for Python: RTP and RFC 4175 header parsing, frame
-boundaries, sequence-loss accounting, pgroup geometry, and SDP.
+SMPTE ST 2110 protocol for Python: RTP and RFC 4175 headers read and
+written, frame boundaries, sequence-loss accounting, pgroup geometry, and
+SDP.
 
 > [REQUIREMENTS.md](REQUIREMENTS.md) — the problem.
 > [SPEC.md](SPEC.md) — the design and its rationale.
@@ -47,19 +48,42 @@ and not a filter. A packet is free to name a row outside the image, so
 raster and a consumer places only those:
 
 ```python
-fits = fits_raster(video, payload.line, payload.offset)
-starts = payload.line[fits] * line_bytes(video) + byte_offset(video, payload.offset[fits])
+fits = fits_raster(video, payload.line, payload.offset_samples)
+starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
 ```
+
+Sending is the same shape in reverse. A frame's headers are built once
+for a format and payload size, then stamped per frame with the only two
+fields that move — the sequence numbers and the media timestamp:
+
+```python
+from pyst2110 import FrameHeaders, choose_payload_size, format_sdp, max_payload_size
+
+payload_size = choose_payload_size(video, max_payload_size(video))
+frame = FrameHeaders(video, payload_size, ssrc=0x1234ABCD)
+for index in range(frames):
+    headers = frame.stamp(index)   # (packets, 20) uint8, one row per packet
+    ...                            # send each header with frame.frame_offset_octets
+offer = format_sdp(flow, video)    # the SDP describing what was just sent
+```
+
+`frame_offset_octets` says which octets of the frame buffer each packet
+carries. Moving them is the consumer's, as on the receive side.
+
+`stamp` hands back the same array every time, restamped in place — that
+is what keeps the loop above from allocating a frame of headers per
+frame. So `headers` is only valid until the next `stamp`: a caller
+queueing two frames at once copies the first.
 
 ## API
 
 Everything is re-exported from the top-level package, and the
 docstrings there are the authority; `help(pyst2110)` is the index.
 
-The receive path is built: SDP parsing, the RFC 3550 header parse,
-format geometry, sequence and frame tracking, and RFC 4175 payload
-descriptors. Transmit headers and SDP emit are specified and not yet
-built — see [ROADMAP.md](ROADMAP.md) for the order they land in.
+Both paths are built: SDP parsing and emit, the RFC 3550 header parse,
+format geometry, sequence and frame tracking, RFC 4175 payload
+descriptors, and the transmit header block. What is not built is listed
+in [ROADMAP.md](ROADMAP.md).
 
 ## Development
 

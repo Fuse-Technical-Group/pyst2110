@@ -2,18 +2,80 @@
 
 Enough to read the addresses out of an ST 2110 offer, and enough of
 ST 2110-20's ``a=fmtp:`` to size the frame a transmitter is about to pace
-(SPEC §spec:sdp).
+(SPEC §spec:sdp). Both directions: a receiver reads an SDP it is handed, and
+a transmitter is configured by one it produces.
 
 Colorimetry is carried through, not interpreted: what a consumer does with
-``BT.2020`` is its own concern, and this records which token the SDP said.
+``BT2020`` is its own concern, and this records which token the SDP said.
 """
 
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from fractions import Fraction
 
-__all__ = ["SdpFlow", "SdpVideo", "parse_sdp", "parse_video_format"]
+from pyst2110 import _layout
+
+__all__ = [
+    "RTP_CLOCK_RATE",
+    "STANDARD_UDP_SIZE_LIMIT",
+    "SdpFlow",
+    "SdpVideo",
+    "format_sdp",
+    "parse_sdp",
+    "parse_video_format",
+]
+
+#: The RTP clock rate ST 2110-20 section 6.1.3 fixes for video: "The RTP Clock
+#: rate for streams compliant to this standard shall be 90 kHz."
+RTP_CLOCK_RATE = 90_000
+
+#: The Standard UDP Size Limit of SMPTE ST 2110-10: what a 1500-octet MTU
+#: leaves after a 40-octet IPv6 header, counting the 8-octet UDP header within
+#: itself. ST 2110-20 section 7.3 makes an absent ``MAXUDP`` mean exactly this,
+#: so it is the default and never written out.
+STANDARD_UDP_SIZE_LIMIT = 1460
+
+# ST 2110-20 section 6.3.2. The geometry this library computes tiles a line
+# with equal packets and sets no Line Continuation bit, which is the General
+# Packing Mode; the Block Packing Mode's 180-octet rule is a different sizing
+# and would be a false claim here (§spec:geometry).
+_PACKING_MODE = "2110GPM"
+
+# ST 2110-20 section 7.2: the 2017 revision unless the colorimetry value ALPHA
+# or the TCS value ST2115LOGS3 is used. TCS is not modelled, so colorimetry is
+# the whole of the test this library can make.
+_STANDARD_NUMBER = "ST2110-20:2017"
+_STANDARD_NUMBER_2022 = "ST2110-20:2022"
+_ALPHA = "ALPHA"
+
+# ST 2110-20 section 7.5 has a token for a colorimetry nobody stated, so an SDP
+# that omits the required parameter is recorded rather than guessed over.
+_UNSPECIFIED = "UNSPECIFIED"
+
+# ST 2110-20 section 7.2: width and height are "integers between 1 and 32767
+# inclusive" — which is also all the SRD Row Number and Offset fields hold.
+_MAX_RASTER = _layout.VALUE_MASK
+# A UDP port and a UDP datagram's length are both sixteen-bit fields, so no
+# port or MAXUDP above this describes one that can exist.
+_MAX_PORT = _layout.U16_MODULUS - 1
+_MAX_UDP_SIZE = _layout.U16_MODULUS - 1
+# RFC 3550 section 5.1 gives the payload type seven bits.
+_MAX_PAYLOAD_TYPE = _layout.PAYLOAD_TYPE_MASK
+_DEFAULT_PAYLOAD_TYPE = _layout.DYNAMIC_PAYLOAD_TYPE
+_MAX_TTL = 255
+# RFC 4566 section 5.2 wants the session id "based on a 64-bit NTP timestamp".
+_MAX_SESSION_ID = (1 << 64) - 1
+# ST 2110-20 section 7.4.2 lists the depths a sender may declare. 16f is
+# half-float and not modelled here (§road:future).
+_DEPTHS = (8, 10, 12, 16)
+
+# Every character ``str.splitlines()`` starts a new line at. RFC 4566 ends a
+# record with CRLF alone, but a reader that splits the document into lines —
+# as :func:`parse_sdp` does — begins a record at any of these, so a caller's
+# string carrying one declares a record of its own.
+_LINE_TERMINATORS = frozenset("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
 
 
 @dataclass(frozen=True)
@@ -34,11 +96,12 @@ class SdpVideo:
     frame_rate: Fraction
     depth: int
     sampling: str
+    #: The token the SDP said, uninterpreted. ``UNSPECIFIED`` where the SDP
+    #: named none, which ST 2110-20 section 7.5 defines as that very case.
+    colorimetry: str = _UNSPECIFIED
     interlaced: bool = False
-    # The largest UDP payload the sender will emit. ST 2110-20 carries it as
-    # an optional fmtp parameter and the SDK documents 1460 as its default,
-    # which is what a 1500-byte MTU leaves after the IP and UDP headers.
-    max_udp: int = 1460
+    #: The largest UDP payload the sender will emit, from ``MAXUDP``.
+    max_udp: int = STANDARD_UDP_SIZE_LIMIT
 
     @property
     def frame_interval_ns(self) -> int:
@@ -132,14 +195,27 @@ def parse_video_format(text: str) -> SdpVideo:
     if "exactframerate" not in parameters:
         raise ValueError("the SDP's fmtp line has no exactframerate")
 
+    # Bounded here as well as on the way out: a width the emitter refuses is
+    # one the transmit path cannot put an SRD Offset in either, and the two
+    # sides of one parameter are worth no two different answers.
+    width = int(parameters["width"])
+    height = int(parameters["height"])
+    # Section 7.3: absent means the Standard UDP Size Limit is in use.
+    max_udp = int(parameters.get("MAXUDP", STANDARD_UDP_SIZE_LIMIT))
+    _integer(width, "width", 1, _MAX_RASTER)
+    _integer(height, "height", 1, _MAX_RASTER)
+    _integer(max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
+
     return SdpVideo(
-        width=int(parameters["width"]),
-        height=int(parameters["height"]),
+        width=width,
+        height=height,
         frame_rate=_frame_rate(parameters["exactframerate"]),
         depth=int(parameters.get("depth", 10)),
         sampling=parameters.get("sampling", ""),
+        colorimetry=parameters.get("colorimetry", _UNSPECIFIED),
         # A flag with no value: SMPTE ST 2110-20 writes bare "interlace".
         interlaced="interlace" in parameters,
+        max_udp=max_udp,
     )
 
 
@@ -195,3 +271,212 @@ def _source_address(line: str) -> str:
     if len(fields) < 5 or fields[0] != "incl":
         return ""
     return fields[4]
+
+
+def format_sdp(
+    flow: SdpFlow,
+    video: SdpVideo,
+    *,
+    payload_type: int = _DEFAULT_PAYLOAD_TYPE,
+    session_name: str = " ",
+    session_id: int = 0,
+    ttl: int = 64,
+) -> str:
+    """Write the SDP offer that describes this flow and format.
+
+    The document RFC 4566 section 5 requires, in the order it requires, with
+    the media type parameters of ST 2110-20 section 7.2 on the ``a=fmtp:``
+    line and the 90 kHz clock of section 7.1 on the ``a=rtpmap:`` one.
+    Records end with CRLF, as RFC 4566 specifies.
+
+    ``session_id`` fills both the session identifier and its version in the
+    ``o=`` line. It defaults to zero, which is repeatable rather than unique:
+    RFC 4566 wants the tuple globally unique, so a caller offering several
+    sessions passes its own. ``session_name`` defaults to the single space
+    section 5.3 prescribes where a session has no meaningful name.
+
+    Every caller-supplied value is validated before it is written, and an
+    address is written in the form the address parse made of it rather than
+    the form it arrived in. An SDP is line-structured, so a value carrying a
+    line terminator would otherwise declare records of its own, and a
+    malformed address describes a flow that cannot be joined. Raises
+    ``ValueError`` naming the field.
+
+    What is not written: the ``a=ts-refclk:`` and ``a=mediaclk:`` attributes
+    of ST 2110-10. They name a PTP domain and a media clock this library does
+    not model, and inventing either would describe a synchronisation the
+    sender has not actually got. A caller that owns the clock appends them.
+    """
+    destination = _address(flow.destination_ip, "destination")
+    origin = _address(flow.source_ip, "source") if flow.source_ip else None
+    _integer(flow.destination_port, "port", 1, _MAX_PORT)
+    validate_payload_type(payload_type)
+    _integer(ttl, "TTL", 0, _MAX_TTL)
+    _integer(session_id, "session id", 0, _MAX_SESSION_ID)
+    if _LINE_TERMINATORS.intersection(session_name):
+        raise ValueError("a session name cannot carry a line terminator")
+
+    # RFC 4566 section 5.7: an IPv4 multicast address "MUST also have a time
+    # to live (TTL) value present", and for IPv6 it "MUST NOT be present".
+    scope = f"/{ttl}" if destination.version == 4 and destination.is_multicast else ""
+    host = str(origin) if origin else _unspecified_host(destination)
+    lines = [
+        "v=0",
+        f"o=- {session_id} {session_id} IN {_addrtype(origin or destination)} {host}",
+        f"s={session_name}",
+        "t=0 0",
+        f"m=video {flow.destination_port} RTP/AVP {payload_type}",
+        f"c=IN {_addrtype(destination)} {destination}{scope}",
+    ]
+    if origin is not None:
+        lines.append(
+            f"a=source-filter: incl IN {_filter_addrtype(destination, origin)} "
+            f"{destination} {origin}"
+        )
+    lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
+    lines.append(f"a=fmtp:{payload_type} {_media_type_parameters(video)}")
+    return "".join(f"{line}\r\n" for line in lines)
+
+
+def _media_type_parameters(video: SdpVideo) -> str:
+    """The ``a=fmtp:`` parameters for a format, in ST 2110-20 section 7 order.
+
+    Section 7.1 fixes the punctuation: entries "separated by the semicolon
+    (';') character followed by whitespace", with "no semicolon character
+    after the last item".
+
+    The parameters of section 7.3 are written only where they differ from
+    their defaults, because that is what their absence is defined to mean —
+    writing ``MAXUDP=1460`` claims a limit was negotiated when it was not.
+    """
+    _token(video.sampling, "sampling")
+    _token(video.colorimetry, "colorimetry")
+    _integer(video.width, "width", 1, _MAX_RASTER)
+    _integer(video.height, "height", 1, _MAX_RASTER)
+    _integer(video.depth, "depth", _DEPTHS[0], _DEPTHS[-1])
+    if video.depth not in _DEPTHS:
+        raise ValueError(
+            f"a depth of {video.depth} is not one of the {list(_DEPTHS)} bits "
+            f"ST 2110-20 section 7.4.2 lists"
+        )
+    _integer(video.max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
+    if video.frame_rate <= 0:
+        raise ValueError(f"an exactframerate of {video.frame_rate} is not a rate")
+
+    parameters = [
+        f"sampling={video.sampling}",
+        f"width={video.width}",
+        f"height={video.height}",
+        f"exactframerate={_exact_frame_rate(video.frame_rate)}",
+        f"depth={video.depth}",
+        f"colorimetry={video.colorimetry}",
+        f"PM={_PACKING_MODE}",
+        f"SSN={_standard_number(video.colorimetry)}",
+    ]
+    if video.interlaced:
+        parameters.append("interlace")
+    if video.max_udp != STANDARD_UDP_SIZE_LIMIT:
+        parameters.append(f"MAXUDP={video.max_udp}")
+    return "; ".join(parameters)
+
+
+def _standard_number(colorimetry: str) -> str:
+    """Which revision of ST 2110-20 a sender signals (section 7.2)."""
+    return _STANDARD_NUMBER_2022 if colorimetry == _ALPHA else _STANDARD_NUMBER
+
+
+def _exact_frame_rate(rate: Fraction) -> str:
+    """``25``, or ``30000/1001`` — ST 2110-20 section 7.2's two spellings.
+
+    A ``Fraction`` is already in lowest terms, which is the standard's
+    "numerically smallest numerator value possible".
+    """
+    if rate.denominator == 1:
+        return str(rate.numerator)
+    return f"{rate.numerator}/{rate.denominator}"
+
+
+def _token(value: str, name: str) -> None:
+    """Refuse a media type parameter value that is not a single token.
+
+    ST 2110-20 section 7.1 allows "no whitespace within the name or value", so
+    this is the standard's own rule — and it is also what stops a value from
+    forging a parameter, or a line, of its own.
+    """
+    if not value or any(character.isspace() for character in value):
+        raise ValueError(f"{name}={value!r} is not a single ST 2110-20 token")
+
+
+def validate_payload_type(value: int) -> None:
+    """Refuse an RTP payload type outside its seven bits (RFC 3550 §5.1).
+
+    Package-internal, and shared with :mod:`pyst2110.transmit`: the offer and
+    the headers describe one flow, and two copies of one bound are two
+    chances to disagree about it.
+    """
+    _integer(value, "payload type", 0, _MAX_PAYLOAD_TYPE)
+
+
+def _integer(value: object, name: str, low: int, high: int) -> None:
+    """Refuse a value that is not a whole number inside the range named.
+
+    :class:`SdpFlow` and :class:`SdpVideo` are plain dataclasses, so an
+    annotation of ``int`` is a promise and not a check: a string reaches the
+    document verbatim, and one carrying a semicolon or a line terminator
+    forges a media type parameter or a record of its own.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"a {name} of {value!r} is not a whole number")
+    if not low <= value <= high:
+        raise ValueError(f"a {name} of {value} is outside the range {low}-{high}")
+
+
+def _address(text: str, role: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Parse an address, so that what is written is one and only one.
+
+    The parsed object is what the document carries, never the caller's own
+    string. CPython accepts an IPv6 scope identifier made of any characters
+    but ``%`` — carriage returns and newlines among them — so writing the
+    input back would forge records with real CRLFs, past a strict RFC 4566
+    reader and not merely past a line split. A scope names a local interface
+    and means nothing to a peer, so it is refused rather than stripped.
+    """
+    try:
+        address = ipaddress.ip_address(text)
+    except ValueError as exc:
+        raise ValueError(f"the {role} {text!r} is not an IP address") from exc
+    if isinstance(address, ipaddress.IPv6Address) and address.scope_id is not None:
+        raise ValueError(f"the {role} {text!r} carries a scope identifier")
+    return address
+
+
+def _addrtype(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """RFC 4566's ``<addrtype>``, which the address family decides."""
+    return "IP4" if address.version == 4 else "IP6"
+
+
+def _filter_addrtype(
+    destination: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    source: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str:
+    """The ``<addrtype>`` of ``a=source-filter``, which covers both addresses.
+
+    RFC 4570 section 3 allows the wildcard where the filter spans more than
+    one family, which a v4 destination filtering a v6 source does: naming
+    either family would describe the other address wrongly.
+    """
+    if destination.version == source.version:
+        return _addrtype(destination)
+    return "*"
+
+
+def _unspecified_host(
+    destination: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> str:
+    """The ``o=`` address where no source filter names a sender.
+
+    RFC 4566 wants a unicast address there. With no sender declared there is
+    none to give, so the unspecified address of the destination's own family
+    says so rather than naming a host that is not the origin.
+    """
+    return "0.0.0.0" if destination.version == 4 else "::"  # noqa: S104

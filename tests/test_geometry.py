@@ -21,6 +21,9 @@ from pyst2110.geometry import (
     packets_per_frame,
     packets_per_line,
     pgroup,
+    raster_offset,
+    rows_per_field,
+    sample_offset,
 )
 from pyst2110.sdp import SdpVideo
 
@@ -226,12 +229,34 @@ def test_a_sample_position_past_the_row_does_not_fit():
 
 def test_an_interlaced_row_is_bounded_by_the_field_not_the_frame():
     """An interlaced flow numbers rows within a field, and the F bit says
-    which — so half the frame's height is the bound (ST 2110-20 §6.1.5)."""
+    which — so the first field's row count is the bound (ST 2110-20 §6.1.5)."""
     lines = np.array([539, 540, 1079], dtype=np.int64)
     offsets = np.zeros(3, dtype=np.int64)
     interlaced = video(interlaced=True)
     assert fits_raster(interlaced, lines, offsets).tolist() == [True, False, False]
     assert fits_raster(video(), lines, offsets).tolist() == [True, True, True]
+
+
+@pytest.mark.parametrize(
+    ("height", "interlaced", "expected"),
+    [(1080, False, 1080), (1080, True, 540), (5, False, 5), (5, True, 3)],
+)
+def test_a_fields_rows_are_the_temporally_first_fields(
+    height: int, interlaced: bool, expected: int
+):
+    """Section 6.1.5: "if the height is odd, the temporally first field shall
+    contain one more line than the temporally second field"."""
+    assert rows_per_field(video(height=height, interlaced=interlaced)) == expected
+
+
+def test_an_odd_interlaced_height_admits_the_row_the_extra_line_needs():
+    """Halving the height rounds the extra line away and rejects the row a
+    sender builds for it — a descriptor this library made, refused by this
+    library's own bound."""
+    odd = video(height=5, interlaced=True)
+    lines = np.array([0, 1, 2, 3], dtype=np.int64)
+    offsets = np.zeros(4, dtype=np.int64)
+    assert fits_raster(odd, lines, offsets).tolist() == [True, True, True, False]
 
 
 def test_the_fit_mask_keeps_the_descriptors_own_shape():
@@ -251,9 +276,39 @@ def test_the_hostile_descriptor_scales_but_does_not_fit():
     line = np.array([32767], dtype=np.int64)
     offset = np.array([32767], dtype=np.int64)
     assert byte_offset(current, offset).tolist() == [81915]
-    start = int(line[0]) * line_bytes(current) + int(byte_offset(current, offset)[0])
-    assert start > current.height * line_bytes(current)
+    start = raster_offset(current, line, offset)
+    assert start.tolist() == [32767 * 4800 + 81915]
+    assert int(start[0]) > current.height * line_bytes(current)
     assert fits_raster(current, line, offset).tolist() == [False]
+
+
+def test_a_byte_offset_becomes_the_sample_position_that_names_it():
+    """The inverse of byte_offset, and the direction a sender needs: it knows
+    which octets a packet carries and has to say which pixel they start at."""
+    octets = np.array([0, 5, 1200, 2400, 4795], dtype=np.int64)
+    assert sample_offset(video(), octets).tolist() == [0, 2, 480, 960, 1918]
+
+
+def test_a_sample_position_and_a_byte_offset_invert_each_other():
+    samples = np.array([0, 2, 480, 960, 1918], dtype=np.int64)
+    current = video()
+    assert sample_offset(current, byte_offset(current, samples)).tolist() == (
+        samples.tolist()
+    )
+
+
+def test_a_raster_offset_is_the_row_and_the_sample_position_together():
+    """Where a descriptor's data belongs in a frame buffer — the library's
+    central output, written here rather than at each of its callers."""
+    current = video()
+    lines = np.array([0, 0, 1, 1079], dtype=np.int64)
+    offsets = np.array([0, 960, 0, 1918], dtype=np.int64)
+    assert raster_offset(current, lines, offsets).tolist() == [
+        0,
+        2400,
+        4800,
+        1079 * 4800 + 4795,
+    ]
 
 
 def test_the_last_packet_of_a_line_ends_exactly_at_the_line():

@@ -19,21 +19,9 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from pyst2110 import _chunk
+from pyst2110 import _chunk, _layout
 
 __all__ = ["PayloadHeaders", "parse_payload_headers"]
-
-# RFC 4175 §4.2: two octets of Extended Sequence Number, then one or more
-# six-octet Sample Row Data headers.
-_EXTENDED_SEQUENCE_SIZE = 2
-_SRD_SIZE = 6
-_SRD_LENGTH = 0
-_SRD_ROW = 2
-_SRD_OFFSET = 4
-# The F bit tops the row word and the C bit tops the offset word, leaving
-# fifteen bits of value under each.
-_FLAG_MASK = 0x8000
-_VALUE_MASK = 0x7FFF
 
 # SMPTE ST 2110-20 §6.1.4: "one, two, or three Sample Row Data (SRD) Headers".
 # RFC 4175 itself sets no limit, so the bound is a parameter — but a walk over
@@ -85,7 +73,7 @@ class PayloadHeaders:
     #: turns it into one using the format's pgroup. Unbounded here for the
     #: same reason as :attr:`line`, and bounded by the same mask: the scaling
     #: carries a position past the row's width straight through.
-    offset: NDArray[np.int64]
+    offset_samples: NDArray[np.int64]
     #: Where this descriptor's data begins within its packet row. Derived
     #: from the declared lengths ahead of it, which are unchecked, so it can
     #: point past the packet — and ``size - source`` is then negative, which
@@ -134,7 +122,7 @@ def parse_payload_headers(
     :func:`pyst2110.geometry.fits_raster` bounds those against a flow, which
     needs a format this parse does not take (§spec:payload-header).
     """
-    _chunk.validate(packets, _EXTENDED_SEQUENCE_SIZE + _SRD_SIZE)
+    _chunk.validate(packets, _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE)
     if max_segments < 1:
         raise ValueError(
             f"a payload header carries at least one SRD, so max_segments must "
@@ -157,26 +145,26 @@ def parse_payload_headers(
     # A segment exists only if the one before it set the continuation bit and
     # its own six octets are inside the packet.
     active = readable
-    base = starts + _EXTENDED_SEQUENCE_SIZE
+    base = starts + _layout.EXTENDED_SEQUENCE_SIZE
     for segment in range(max_segments):
-        raw_length, _ = _chunk.read_u16(packets, base + _SRD_LENGTH, bounds)
-        raw_row, _ = _chunk.read_u16(packets, base + _SRD_ROW, bounds)
-        raw_offset, fits = _chunk.read_u16(packets, base + _SRD_OFFSET, bounds)
+        raw_length, _ = _chunk.read_u16(packets, base + _layout.SRD_LENGTH, bounds)
+        raw_row, _ = _chunk.read_u16(packets, base + _layout.SRD_ROW, bounds)
+        raw_offset, fits = _chunk.read_u16(packets, base + _layout.SRD_OFFSET, bounds)
         # An SRD header is one six-octet unit, so its last field landing
         # inside the packet is the whole of it landing inside.
         read = active & fits
 
         present[:, segment] = read
         length[:, segment] = np.where(read, raw_length, 0)
-        line[:, segment] = np.where(read, raw_row & _VALUE_MASK, 0)
-        field[:, segment] = read & ((raw_row & _FLAG_MASK) != 0)
-        offset[:, segment] = np.where(read, raw_offset & _VALUE_MASK, 0)
+        line[:, segment] = np.where(read, raw_row & _layout.VALUE_MASK, 0)
+        field[:, segment] = read & ((raw_row & _layout.FLAG_MASK) != 0)
+        offset[:, segment] = np.where(read, raw_offset & _layout.VALUE_MASK, 0)
 
-        active = read & ((raw_offset & _FLAG_MASK) != 0)
-        base = base + _SRD_SIZE
+        active = read & ((raw_offset & _layout.FLAG_MASK) != 0)
+        base = base + _layout.SRD_SIZE
 
     parsed = present.sum(axis=1).astype(np.int64)
-    data_offset = starts + _EXTENDED_SEQUENCE_SIZE + _SRD_SIZE * parsed
+    data_offset = starts + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE * parsed
     # Every segment's data follows the whole header, one after another, so a
     # segment starts where the lengths before it end.
     preceding = np.cumsum(length, axis=1) - length
@@ -202,7 +190,7 @@ def parse_payload_headers(
         length=length.ravel()[kept],
         line=line.ravel()[kept],
         field=field.ravel()[kept],
-        offset=offset.ravel()[kept],
+        offset_samples=offset.ravel()[kept],
         source=source.ravel()[kept],
         overflowed=overflowed,
     )

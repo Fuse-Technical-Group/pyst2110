@@ -25,7 +25,13 @@ __all__ = [
     "packets_per_frame",
     "packets_per_line",
     "pgroup",
+    "raster_offset",
+    "rows_per_field",
+    "sample_offset",
 ]
+
+# ST 2110-20 section 6.1.5: an interlaced frame is sent as two fields.
+_FIELDS_PER_FRAME = 2
 
 # SMPTE ST 2110-20 Table 1 (4:4:4) and Table 2 (4:2:2), as (octets, pixels).
 # Both families group samples within a single row, which is what lets a line
@@ -122,6 +128,23 @@ def packets_per_frame(video: SdpVideo, payload_size: int) -> int:
     return packets_per_line(video, payload_size) * video.height
 
 
+def rows_per_field(video: SdpVideo) -> int:
+    """Sample rows in the temporally first field, or in a progressive frame.
+
+    ST 2110-20 section 6.1.5: "if the height is odd, the temporally first
+    field shall contain one more line than the temporally second field". So
+    an odd raster's bound is not the halved height — halving rounds the extra
+    line away and refuses the row a sender builds for it.
+
+    One formula, called by both sides: :func:`fits_raster` bounds a received
+    row with it and :class:`pyst2110.transmit.FrameHeaders` splits a frame's
+    packets at it.
+    """
+    if not video.interlaced:
+        return video.height
+    return (video.height + _FIELDS_PER_FRAME - 1) // _FIELDS_PER_FRAME
+
+
 def fits_raster(
     video: SdpVideo,
     line: NDArray[np.integer[Any]],
@@ -141,14 +164,14 @@ def fits_raster(
     raising (§spec:scope-boundary). Mask before placing, not after.
 
     An interlaced flow numbers rows within a field, so the bound there is
-    half the frame's height; which field is the F bit's, reported separately
+    :func:`rows_per_field`; which field is the F bit's, reported separately
     (ST 2110-20 section 6.1.5).
 
     Segment lengths are not checked. Under a header-data split the payload
     sits in a buffer this library never sees, so bounding the extent stays
     the consumer's (§spec:payload-header).
     """
-    rows = video.height // 2 if video.interlaced else video.height
+    rows = rows_per_field(video)
     positions = np.asarray(line, dtype=np.int64)
     samples = np.asarray(offset, dtype=np.int64)
     within_image = (positions >= 0) & (positions < rows)
@@ -177,3 +200,41 @@ def byte_offset(
     group_bytes, group_pixels = pgroup(video)
     positions = np.asarray(samples, dtype=np.int64)
     return (positions // group_pixels * group_bytes).astype(np.int64)
+
+
+def sample_offset(
+    video: SdpVideo, octets: NDArray[np.integer[Any]]
+) -> NDArray[np.int64]:
+    """Scale byte offsets within a row into the sample positions naming them.
+
+    The inverse of :func:`byte_offset`, and the direction a sender needs: it
+    knows which octets a packet carries and has to say which pixel they start
+    at. An offset that is not on a pgroup boundary floors to the pgroup
+    containing it, as the forward scaling does.
+
+    Array in, array out (§spec:interface-shape).
+    """
+    group_bytes, group_pixels = pgroup(video)
+    positions = np.asarray(octets, dtype=np.int64)
+    return (positions // group_bytes * group_pixels).astype(np.int64)
+
+
+def raster_offset(
+    video: SdpVideo,
+    line: NDArray[np.integer[Any]],
+    offset: NDArray[np.integer[Any]],
+) -> NDArray[np.int64]:
+    """Where a descriptor's data belongs in a frame buffer, in octets.
+
+    A payload header's two position fields resolved against the format: the
+    row scaled by the line length, plus the sample position scaled by the
+    pgroup. The receive path's placement and the transmit path's
+    ``frame_offset_octets`` are this one expression, so both are it rather
+    than each writing it out.
+
+    Unbounded, as :func:`byte_offset` is: a row past the image scales like any
+    other, and the two are indistinguishable here. Mask with
+    :func:`fits_raster` before the result indexes anything.
+    """
+    rows = np.asarray(line, dtype=np.int64)
+    return (rows * line_bytes(video) + byte_offset(video, offset)).astype(np.int64)
