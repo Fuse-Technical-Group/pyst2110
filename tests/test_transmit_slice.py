@@ -217,6 +217,28 @@ def test_an_interlaced_frame_round_trips_with_its_fields_intact():
     assert sorted(set(rtp.timestamp.tolist())) == [0, 1800]
 
 
+def test_an_odd_interlaced_height_places_every_descriptor_it_builds():
+    """Section 6.1.5 gives the temporally first field the extra line, so a
+    five-row interlaced frame is three rows then two. The bound the receive
+    side applies has to admit the row the transmit side just built."""
+    video = SdpVideo(
+        width=4,
+        height=5,
+        frame_rate=Fraction(25),
+        depth=10,
+        sampling="YCbCr-4:2:2",
+        interlaced=True,
+    )
+    frame = FrameHeaders(video, payload_size=5, ssrc=_SSRC)
+    block = frame.stamp(0)
+    sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
+
+    rtp = parse_rtp(block, sizes=sizes)
+    payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
+    assert payload.line.size == 10
+    assert fits_raster(video, payload.line, payload.offset).all()
+
+
 def test_the_emitted_offer_and_the_built_frame_describe_one_flow():
     """End to end: the offer says General Packing Mode and 1200-octet packets
     fit under the limit it declares, which is what makes the pair consistent.

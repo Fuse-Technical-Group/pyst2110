@@ -21,6 +21,7 @@ from pyst2110.geometry import (
     packets_per_frame,
     packets_per_line,
     pgroup,
+    rows_per_field,
 )
 from pyst2110.sdp import SdpVideo
 
@@ -226,12 +227,34 @@ def test_a_sample_position_past_the_row_does_not_fit():
 
 def test_an_interlaced_row_is_bounded_by_the_field_not_the_frame():
     """An interlaced flow numbers rows within a field, and the F bit says
-    which — so half the frame's height is the bound (ST 2110-20 §6.1.5)."""
+    which — so the first field's row count is the bound (ST 2110-20 §6.1.5)."""
     lines = np.array([539, 540, 1079], dtype=np.int64)
     offsets = np.zeros(3, dtype=np.int64)
     interlaced = video(interlaced=True)
     assert fits_raster(interlaced, lines, offsets).tolist() == [True, False, False]
     assert fits_raster(video(), lines, offsets).tolist() == [True, True, True]
+
+
+@pytest.mark.parametrize(
+    ("height", "interlaced", "expected"),
+    [(1080, False, 1080), (1080, True, 540), (5, False, 5), (5, True, 3)],
+)
+def test_a_fields_rows_are_the_temporally_first_fields(
+    height: int, interlaced: bool, expected: int
+):
+    """Section 6.1.5: "if the height is odd, the temporally first field shall
+    contain one more line than the temporally second field"."""
+    assert rows_per_field(video(height=height, interlaced=interlaced)) == expected
+
+
+def test_an_odd_interlaced_height_admits_the_row_the_extra_line_needs():
+    """Halving the height rounds the extra line away and rejects the row a
+    sender builds for it — a descriptor this library made, refused by this
+    library's own bound."""
+    odd = video(height=5, interlaced=True)
+    lines = np.array([0, 1, 2, 3], dtype=np.int64)
+    offsets = np.zeros(4, dtype=np.int64)
+    assert fits_raster(odd, lines, offsets).tolist() == [True, True, True, False]
 
 
 def test_the_fit_mask_keeps_the_descriptors_own_shape():

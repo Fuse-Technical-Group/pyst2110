@@ -193,17 +193,27 @@ def parse_video_format(text: str) -> SdpVideo:
     if "exactframerate" not in parameters:
         raise ValueError("the SDP's fmtp line has no exactframerate")
 
+    # Bounded here as well as on the way out: a width the emitter refuses is
+    # one the transmit path cannot put an SRD Offset in either, and the two
+    # sides of one parameter are worth no two different answers.
+    width = int(parameters["width"])
+    height = int(parameters["height"])
+    # Section 7.3: absent means the Standard UDP Size Limit is in use.
+    max_udp = int(parameters.get("MAXUDP", STANDARD_UDP_SIZE_LIMIT))
+    _integer(width, "width", 1, _MAX_RASTER)
+    _integer(height, "height", 1, _MAX_RASTER)
+    _integer(max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
+
     return SdpVideo(
-        width=int(parameters["width"]),
-        height=int(parameters["height"]),
+        width=width,
+        height=height,
         frame_rate=_frame_rate(parameters["exactframerate"]),
         depth=int(parameters.get("depth", 10)),
         sampling=parameters.get("sampling", ""),
         colorimetry=parameters.get("colorimetry", _UNSPECIFIED),
         # A flag with no value: SMPTE ST 2110-20 writes bare "interlace".
         interlaced="interlace" in parameters,
-        # Section 7.3: absent means the Standard UDP Size Limit is in use.
-        max_udp=int(parameters.get("MAXUDP", STANDARD_UDP_SIZE_LIMIT)),
+        max_udp=max_udp,
     )
 
 

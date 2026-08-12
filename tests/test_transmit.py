@@ -350,6 +350,43 @@ def test_a_raster_taller_than_the_row_number_field_is_refused():
         FrameHeaders(video(height=40000), payload_size=5, ssrc=_SSRC)
 
 
+def test_a_raster_wider_than_the_offset_field_is_refused():
+    """The SRD Offset is fifteen bits under the C bit, and ST 2110-20 section
+    7.2 bounds the width at 32767 for it. Unbounded, a 40000-pixel line sets
+    the Line Continuation bit on 28 of its 160 packets and the receive parse
+    reads 188 descriptors out of them — the extra ones out of sample data."""
+    with pytest.raises(ValueError, match="width"):
+        FrameHeaders(video(width=40000, height=2), payload_size=1250, ssrc=_SSRC)
+
+
+def test_a_payload_larger_than_the_srd_length_field_is_refused():
+    """RFC 4175's SRD Length is sixteen bits. A 32766-pixel line under a
+    200,000-octet limit tiles in one 81,915-octet packet, which the field
+    would carry as 16,379."""
+    wide = video(width=32766, height=2, max_udp=200_000)
+    payload_size = choose_payload_size(wide, max_payload_size(wide))
+    assert payload_size == 81_915, "the reproduction no longer reproduces"
+    with pytest.raises(ValueError, match="SRD Length"):
+        FrameHeaders(wide, payload_size, ssrc=_SSRC)
+
+
+@pytest.mark.parametrize("initial_sequence", [-1, 1 << 32])
+def test_an_initial_sequence_outside_the_counter_is_refused(initial_sequence: int):
+    """The counter the RTP and extended sequence numbers split is thirty-two
+    bits, so a start outside it names a number no packet can carry."""
+    with pytest.raises(ValueError, match="sequence number"):
+        FrameHeaders(
+            video(), payload_size=5, ssrc=_SSRC, initial_sequence=initial_sequence
+        )
+
+
+def test_a_frame_index_past_what_the_arithmetic_holds_is_refused():
+    """The contract promises ValueError. Unbounded, the index reaches numpy as
+    a multiplier and raises OverflowError, which no caller of it expects."""
+    with pytest.raises(ValueError, match="frame index"):
+        headers().stamp(1 << 62)
+
+
 def test_a_sampling_this_library_refuses_is_refused_here_too():
     """4:2:0 pgroups span two rows, so none of the arithmetic holds."""
     with pytest.raises(ValueError, match="pgroup"):

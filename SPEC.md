@@ -196,8 +196,11 @@ Scaling a sample position by the pgroup cannot tell a position inside the
 image from one past it — both scale — so a mask says which descriptors name
 a place inside the raster, row inside the image and sample position inside
 the row, and the conversion is documented as requiring it. An interlaced
-flow numbers rows within a field, so the row bound there is half the
-frame's height (§spec:payload-header).
+flow numbers rows within a field, so the row bound there is the first
+field's row count (§spec:payload-header) — which an odd height makes one
+more than half, section 6.1.5 giving the temporally first field the extra
+line. One function computes it, and the receive bound and the transmit
+split both call it rather than each halving for themselves.
 
 4:2:0 sampling is refused rather than approximated. Its pgroups span two
 sample rows, so a line is not a whole number of them and none of the
@@ -268,6 +271,14 @@ The block is **reused**: stamping writes into the array it returned last
 time. Allocating a frame of headers per frame is the cost the split between
 building and stamping exists to avoid, so a caller holding two frames at
 once is the one that copies.
+
+Every value that reaches a header is bounded against the bits that hold it,
+and bounded identically wherever it enters. A width past the SRD Offset's
+fifteen sets the Line Continuation bit and announces a segment the packet
+never carried — which this library's own parse then reads out of sample
+data — and a payload past the SRD Length's sixteen declares less than it
+sends. One parameter has no two answers, so an offer read in is checked
+where an offer written out is.
 
 A declared UDP limit bounds the datagram, not the sample data inside it.
 Turning one into the other is a subtraction of the headers, and getting it

@@ -18,6 +18,7 @@ from pyst2110.geometry import line_bytes as line_bytes
 from pyst2110.geometry import packets_per_frame as packets_per_frame
 from pyst2110.geometry import packets_per_line as packets_per_line
 from pyst2110.geometry import pgroup as pgroup
+from pyst2110.geometry import rows_per_field as rows_per_field
 from pyst2110.payload import PayloadHeaders as PayloadHeaders
 from pyst2110.payload import parse_payload_headers as parse_payload_headers
 from pyst2110.rtp import FIXED_HEADER_SIZE as FIXED_HEADER_SIZE
@@ -62,4 +63,5 @@ __all__ = [
     "parse_sdp",
     "parse_video_format",
     "pgroup",
+    "rows_per_field",
 ]

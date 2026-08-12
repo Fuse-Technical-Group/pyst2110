@@ -20,7 +20,13 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-from pyst2110.geometry import line_bytes, packets_per_line, pgroup
+from pyst2110.geometry import (
+    line_bytes,
+    packets_per_frame,
+    packets_per_line,
+    pgroup,
+    rows_per_field,
+)
 from pyst2110.sdp import RTP_CLOCK_RATE, SdpVideo
 
 __all__ = ["PACKET_HEADER_SIZE", "UDP_HEADER_SIZE", "FrameHeaders", "max_payload_size"]
@@ -52,7 +58,15 @@ _FIELD = 0x8000
 _SEQUENCE_MODULUS = 1 << 32
 _TIMESTAMP_MODULUS = 1 << 32
 _MAX_PAYLOAD_TYPE = 127
-_MAX_ROW = 0x7FFF
+# ST 2110-20 section 7.2 bounds width and height at 32767, which is also all
+# the fifteen bits the SRD Row Number and Offset fields leave under their own
+# flag hold. Past either, the value overflows into the F or the C bit.
+_MAX_RASTER = 0x7FFF
+# RFC 4175 section 4.2 gives the SRD Length sixteen bits, with no flag above it.
+_MAX_SRD_LENGTH = 0xFFFF
+# The derivation in stamp() runs in numpy's int64, which overflows rather than
+# wrapping. An index past what it holds is refused by name instead.
+_INT64_MAX = (1 << 63) - 1
 _FIELDS_PER_FRAME = 2
 
 
@@ -124,6 +138,17 @@ class FrameHeaders:
                 f"{group_bytes}-octet pgroups, which RFC 4175 requires an SRD "
                 f"length to be; see choose_payload_size()"
             )
+        if payload_size > _MAX_SRD_LENGTH:
+            raise ValueError(
+                f"a payload of {payload_size} octets is past the "
+                f"{_MAX_SRD_LENGTH} the SRD Length field holds"
+            )
+        if video.width > _MAX_RASTER:
+            raise ValueError(
+                f"a width of {video.width} needs a sample offset past "
+                f"{_MAX_RASTER}, which is all the SRD Offset field holds "
+                f"below the Line Continuation bit"
+            )
         per_line = packets_per_line(video, payload_size)
         # ST 2110-10 section 6.3: "Senders shall not generate IP Datagrams
         # containing UDP packet sizes larger than this limit."
@@ -138,22 +163,24 @@ class FrameHeaders:
             raise ValueError(f"{payload_type} is not a 7-bit RTP payload type")
         if not 0 <= ssrc < _SEQUENCE_MODULUS:
             raise ValueError(f"{ssrc} is not a 32-bit SSRC")
-        if initial_sequence < 0:
-            raise ValueError(f"{initial_sequence} is not a sequence number")
+        if not 0 <= initial_sequence < _SEQUENCE_MODULUS:
+            raise ValueError(f"{initial_sequence} is not a 32-bit sequence number")
         if video.height <= 0:
             raise ValueError(f"a height of {video.height} is not an image")
-        rows = _rows_per_field(video)
-        if rows > _MAX_ROW:
+        rows = rows_per_field(video)
+        if rows > _MAX_RASTER:
             raise ValueError(
                 f"a height of {video.height} needs a row number past "
-                f"{_MAX_ROW}, which is all the SRD Row Number field holds"
+                f"{_MAX_RASTER}, which is all the SRD Row Number field holds"
             )
 
         self.video = video
         self.payload_size = payload_size
-        self.packets = per_line * video.height
+        self.packets = packets_per_frame(video, payload_size)
         self._initial_sequence = initial_sequence
         self._index = np.arange(self.packets, dtype=np.int64)
+        # The largest index whose sequence arithmetic stays inside int64.
+        self._last_frame = (_INT64_MAX - initial_sequence) // self.packets - 1
 
         # Which field each packet belongs to, and which row within it. An
         # interlaced frame sends its fields in time order, first field first,
@@ -208,8 +235,11 @@ class FrameHeaders:
 
         Returns the block — the same array every time, restamped in place.
         """
-        if frame_index < 0:
-            raise ValueError(f"{frame_index} is not a frame index")
+        if not 0 <= frame_index <= self._last_frame:
+            raise ValueError(
+                f"{frame_index} is not a frame index this block can stamp, "
+                f"which runs to {self._last_frame}"
+            )
         sequence = (
             self._initial_sequence + frame_index * self.packets + self._index
         ) % _SEQUENCE_MODULUS
@@ -245,17 +275,6 @@ class FrameHeaders:
             dtype=np.int64,
         )
         return by_field[self._field]
-
-
-def _rows_per_field(video: SdpVideo) -> int:
-    """Sample rows in the temporally first field, or in a progressive frame.
-
-    ST 2110-20 section 6.1.5: where the height is odd the first field carries
-    the extra line.
-    """
-    if not video.interlaced:
-        return video.height
-    return (video.height + 1) // _FIELDS_PER_FRAME
 
 
 def _put_u16(block: NDArray[np.uint8], offset: int, values: NDArray[np.int64]) -> None:

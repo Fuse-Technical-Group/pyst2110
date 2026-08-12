@@ -136,6 +136,32 @@ def test_a_format_the_transmitter_needs_is_named_when_absent(
         parse_video_format(_ST2110_20.replace(missing, ""))
 
 
+@pytest.mark.parametrize(
+    ("declared", "forged", "message"),
+    [
+        ("width=1920", "width=40000", "width"),
+        ("width=1920", "width=0", "width"),
+        ("height=1080", "height=40000", "height"),
+        ("height=1080", "height=0", "height"),
+    ],
+)
+def test_a_raster_the_standard_does_not_permit_is_refused_on_the_way_in(
+    declared: str, forged: str, message: str
+):
+    """Section 7.2 bounds both at 1-32767, and the emitter refuses them there.
+    A parse that let one through would hand the transmit path a width whose
+    sample offsets run past the SRD Offset field into the C bit."""
+    with pytest.raises(ValueError, match=message):
+        parse_video_format(_ST2110_20.replace(declared, forged))
+
+
+def test_a_declared_udp_size_no_datagram_could_have_is_refused():
+    """A UDP length field is sixteen bits, so a MAXUDP above 65535 describes
+    a datagram that cannot exist."""
+    with pytest.raises(ValueError, match="MAXUDP"):
+        parse_video_format(_ST2110_20.rstrip() + "; MAXUDP=200000\n")
+
+
 def test_an_sdp_without_a_format_line_is_named():
     with pytest.raises(ValueError, match="a=fmtp"):
         parse_video_format("m=video 5004 RTP/AVP 96\nc=IN IP4 239.0.0.1\n")
