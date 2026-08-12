@@ -37,7 +37,7 @@ from pyst2110 import (
     parse_rtp,
     parse_video_format,
 )
-from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders
+from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders, max_payload_size
 
 _FLOW = SdpFlow("239.100.0.1", 20000, "192.168.100.2")
 _2160P24 = SdpVideo(
@@ -59,23 +59,28 @@ def test_the_offer_this_library_writes_describes_the_format_it_was_given():
 
 def test_2160p24_geometry_is_what_the_raster_works_out_to():
     """3840 pixels of 4:2:2 10-bit is 1920 five-octet pgroups: a 9600-octet
-    line. 1200 octets is the largest payload at or under the standard UDP
-    limit that divides it, so a frame is 8 packets a line and 17,280 packets.
+    line. Of the 1432 octets the standard UDP limit leaves for sample data,
+    1200 is the largest that divides the line — 240 pgroups, the next divisor
+    up being 320 — so a frame is 8 packets a line and 17,280 packets.
     """
     video = parse_video_format(format_sdp(_FLOW, _2160P24))
     assert line_bytes(video) == 9600
-    payload_size = choose_payload_size(video, video.max_udp)
+    assert max_payload_size(video) == 1432
+    payload_size = choose_payload_size(video, max_payload_size(video))
     assert payload_size == 1200
-    assert payload_size <= video.max_udp
+    assert payload_size + PACKET_HEADER_SIZE + 8 <= video.max_udp
     assert packets_per_line(video, payload_size) == 8
     assert packets_per_frame(video, payload_size) == 17_280
+    # 83% of the datagram is sample data; the rest is what a divisor of the
+    # line costs. The next size up would need a 1468-octet datagram.
+    assert payload_size / video.max_udp > 0.82
 
 
 def test_a_built_frame_parses_back_into_descriptors_that_tile_the_raster():
     """The verify criterion. A payload that tiles a line makes the frame one
     contiguous run, so exact starts prove no hole and no overlap at once."""
     video = parse_video_format(format_sdp(_FLOW, _2160P24))
-    payload_size = choose_payload_size(video, video.max_udp)
+    payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     block = frame.stamp(0)
     sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
@@ -100,7 +105,7 @@ def test_the_transmit_offsets_agree_with_where_the_receive_parse_places_them():
     """The two sides of the boundary meet here: what the builder says a packet
     carries is where the parse says the same packet's payload belongs."""
     video = _2160P24
-    payload_size = choose_payload_size(video, video.max_udp)
+    payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     block = frame.stamp(0)
     sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
@@ -114,7 +119,10 @@ def test_the_transmit_offsets_agree_with_where_the_receive_parse_places_them():
 def test_the_rtp_fields_come_back_as_they_were_built():
     video = _2160P24
     frame = FrameHeaders(
-        video, choose_payload_size(video, video.max_udp), payload_type=112, ssrc=_SSRC
+        video,
+        choose_payload_size(video, max_payload_size(video)),
+        payload_type=112,
+        ssrc=_SSRC,
     )
     block = frame.stamp(0)
     sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
@@ -136,7 +144,7 @@ def test_three_frames_run_on_with_no_loss_and_three_frame_boundaries():
     """17,280 packets a frame wraps the 16-bit RTP field four times over three
     frames, which is what the extended sequence number is for (§spec:rtp)."""
     video = _2160P24
-    payload_size = choose_payload_size(video, video.max_udp)
+    payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC, initial_sequence=65_000)
 
     sequences = SequenceTracker()
@@ -164,7 +172,7 @@ def test_a_dropped_packet_leaves_a_hole_the_receive_path_can_see():
     """The headers this library builds carry enough for a receiver to detect
     what never arrived — the property the whole pairing exists for."""
     video = _2160P24
-    payload_size = choose_payload_size(video, video.max_udp)
+    payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     lossy = np.delete(frame.stamp(0), [11, 12], axis=0)
     sizes = np.full(lossy.shape[0], PACKET_HEADER_SIZE, dtype=np.int64)
@@ -192,7 +200,7 @@ def test_an_interlaced_frame_round_trips_with_its_fields_intact():
         sampling="YCbCr-4:2:2",
         interlaced=True,
     )
-    payload_size = choose_payload_size(video, video.max_udp)
+    payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
     block = frame.stamp(0)
     sizes = np.full(frame.packets, PACKET_HEADER_SIZE, dtype=np.int64)
@@ -215,7 +223,7 @@ def test_the_emitted_offer_and_the_built_frame_describe_one_flow():
     """
     offer = format_sdp(_FLOW, _2160P24)
     video = parse_video_format(offer)
-    payload_size = choose_payload_size(video, video.max_udp)
+    payload_size = choose_payload_size(video, max_payload_size(video))
     frame = FrameHeaders(video, payload_size, ssrc=_SSRC)
 
     assert "PM=2110GPM" in offer
@@ -225,4 +233,4 @@ def test_the_emitted_offer_and_the_built_frame_describe_one_flow():
     # General Packing Mode the offer claims is the one being built.
     block = frame.stamp(0)
     assert ((block[:, 18] & 0x80) != 0).sum() == 0
-    assert PACKET_HEADER_SIZE + payload_size <= video.max_udp
+    assert PACKET_HEADER_SIZE + payload_size + 8 <= video.max_udp

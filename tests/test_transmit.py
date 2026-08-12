@@ -17,8 +17,9 @@ from typing import Any
 import numpy as np
 import pytest
 
+from pyst2110.geometry import choose_payload_size
 from pyst2110.sdp import SdpVideo
-from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders
+from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders, max_payload_size
 
 _SSRC = 0x1234ABCD
 _PAYLOAD_TYPE = 96
@@ -276,6 +277,31 @@ def test_stamping_reuses_the_one_block_rather_than_allocating_per_frame():
     first = block.stamp(0)
     second = block.stamp(1)
     assert first is second
+
+
+def test_the_payload_limit_leaves_room_for_the_headers_and_the_udp_header():
+    """SMPTE ST 2110-10 section 6.3: "The Standard UDP Size Limit shall be 1460
+    octets. The UDP Size ... includes the length of the UDP header (8 octets)
+    and also the RTP headers and data." So 28 octets of the limit are spoken
+    for before any sample data — the limit is not a payload size."""
+    assert max_payload_size(video()) == 1460 - 8 - PACKET_HEADER_SIZE
+    assert max_payload_size(video(max_udp=8960)) == 8960 - 8 - PACKET_HEADER_SIZE
+
+
+def test_a_payload_that_would_overrun_the_declared_udp_limit_is_refused():
+    """Section 6.3: "Senders shall not generate IP Datagrams containing UDP
+    packet sizes larger than this limit". A 1440-octet payload tiles a
+    576-pixel line and puts 1468 octets on the wire, which is eight too many.
+    """
+    wide = video(width=576)
+    assert choose_payload_size(wide, wide.max_udp) == 1440, "the limit misread"
+    with pytest.raises(ValueError, match="UDP size"):
+        FrameHeaders(wide, payload_size=1440, ssrc=_SSRC)
+    # Sized against the payload limit instead, it fits with nothing to spare.
+    payload_size = choose_payload_size(wide, max_payload_size(wide))
+    frame = FrameHeaders(wide, payload_size, ssrc=_SSRC)
+    assert payload_size + PACKET_HEADER_SIZE + 8 <= wide.max_udp
+    assert frame.packets == 2 * wide.height
 
 
 def test_a_payload_size_that_does_not_tile_a_line_is_refused():

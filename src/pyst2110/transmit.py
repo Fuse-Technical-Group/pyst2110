@@ -23,11 +23,16 @@ from numpy.typing import NDArray
 from pyst2110.geometry import line_bytes, packets_per_line, pgroup
 from pyst2110.sdp import RTP_CLOCK_RATE, SdpVideo
 
-__all__ = ["PACKET_HEADER_SIZE", "FrameHeaders"]
+__all__ = ["PACKET_HEADER_SIZE", "UDP_HEADER_SIZE", "FrameHeaders", "max_payload_size"]
 
 #: Octets of header a packet carries: the twelve of RFC 3550's fixed header,
 #: two of extended sequence number, and one six-octet SRD header.
 PACKET_HEADER_SIZE = 20
+
+#: The UDP header, which SMPTE ST 2110-10 section 6.3 counts inside its size
+#: limit: "The UDP Size is reflected in the UDP header, and includes the length
+#: of the UDP header (8 octets) and also the RTP headers and data."
+UDP_HEADER_SIZE = 8
 
 _RTP_SEQUENCE = 2
 _RTP_TIMESTAMP = 4
@@ -49,6 +54,30 @@ _TIMESTAMP_MODULUS = 1 << 32
 _MAX_PAYLOAD_TYPE = 127
 _MAX_ROW = 0x7FFF
 _FIELDS_PER_FRAME = 2
+
+
+def max_payload_size(video: SdpVideo) -> int:
+    """The largest sample data a packet may carry under this flow's UDP limit.
+
+    ``MAXUDP`` — and the Standard UDP Size Limit it defaults to — bounds the
+    whole UDP datagram, not the sample data inside it: SMPTE ST 2110-10
+    section 6.3 counts the UDP header, the RTP header and the payload header
+    within it. Subtracting them is what turns a declared limit into the
+    ``limit`` :func:`pyst2110.geometry.choose_payload_size` takes, which is a
+    payload size.
+
+    Passing ``video.max_udp`` to that function instead overstates the room by
+    28 octets, and a raster whose line divides in that gap yields packets over
+    the limit — which :class:`FrameHeaders` refuses.
+    """
+    room = video.max_udp - UDP_HEADER_SIZE - PACKET_HEADER_SIZE
+    if room <= 0:
+        raise ValueError(
+            f"a UDP size limit of {video.max_udp} octets leaves no room for "
+            f"the {UDP_HEADER_SIZE + PACKET_HEADER_SIZE} octets of header a "
+            f"packet carries"
+        )
+    return room
 
 
 class FrameHeaders:
@@ -94,6 +123,15 @@ class FrameHeaders:
                 f"length to be; see choose_payload_size()"
             )
         per_line = packets_per_line(video, payload_size)
+        # ST 2110-10 section 6.3: "Senders shall not generate IP Datagrams
+        # containing UDP packet sizes larger than this limit."
+        if payload_size > max_payload_size(video):
+            raise ValueError(
+                f"a payload of {payload_size} octets makes a UDP size of "
+                f"{payload_size + PACKET_HEADER_SIZE + UDP_HEADER_SIZE}, past "
+                f"the {video.max_udp} this flow declares; size it with "
+                f"choose_payload_size(video, max_payload_size(video))"
+            )
         if not 0 <= payload_type <= _MAX_PAYLOAD_TYPE:
             raise ValueError(f"{payload_type} is not a 7-bit RTP payload type")
         if not 0 <= ssrc < _SEQUENCE_MODULUS:
