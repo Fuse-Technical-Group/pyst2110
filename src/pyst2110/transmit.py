@@ -112,8 +112,10 @@ class FrameHeaders:
         """Lay out the headers for one frame of this format.
 
         Raises ``ValueError`` where the format and payload size cannot be put
-        on the wire: a size that does not tile a line or is not a whole number
-        of pgroups, a field outside its width, a sampling with no pgroup.
+        on the wire: a sampling with no pgroup, a payload size that does not
+        tile a line or is not a whole number of pgroups or overruns the flow's
+        UDP limit, a raster with no rows or more than the row number field
+        holds, or a payload type or SSRC outside its field.
         """
         group_bytes, group_pixels = pgroup(video)
         if payload_size % group_bytes:
@@ -138,6 +140,8 @@ class FrameHeaders:
             raise ValueError(f"{ssrc} is not a 32-bit SSRC")
         if initial_sequence < 0:
             raise ValueError(f"{initial_sequence} is not a sequence number")
+        if video.height <= 0:
+            raise ValueError(f"a height of {video.height} is not an image")
         rows = _rows_per_field(video)
         if rows > _MAX_ROW:
             raise ValueError(

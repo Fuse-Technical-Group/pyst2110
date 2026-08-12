@@ -335,6 +335,14 @@ def test_a_negative_frame_index_is_refused():
         headers().stamp(-1)
 
 
+@pytest.mark.parametrize("height", [0, -1])
+def test_a_raster_with_no_rows_is_refused(height: int):
+    """A frame of no packets has no last packet to mark, so this has to be
+    refused where it is named rather than indexed into an empty block."""
+    with pytest.raises(ValueError, match="height"):
+        FrameHeaders(video(height=height), payload_size=5, ssrc=_SSRC)
+
+
 def test_a_raster_taller_than_the_row_number_field_is_refused():
     """The SRD Row Number is fifteen bits, so a taller image would truncate
     into the F bit and announce the wrong field."""
