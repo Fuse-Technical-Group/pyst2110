@@ -186,6 +186,13 @@ packets per frame, and the largest payload size that divides a line without
 a remainder. A transmitter needs all four to size what it sends; a receiver
 needs line length to place what it gets.
 
+The placement itself is here too, and is one function rather than an
+expression each caller repeats: a row and a sample position resolved into an
+octet offset in a frame buffer. It is the library's central output, computed
+identically on both paths, and the scaling runs in both directions — a
+receiver turns a sample position into octets, a sender turns the octets a
+packet carries into the position that names them.
+
 That payload size is searched over pgroups per packet rather than over
 bytes: both RFC 4175 and ST 2110-20 require a segment length be a multiple
 of the pgroup, and a divisor of the line length need not be one. One pgroup

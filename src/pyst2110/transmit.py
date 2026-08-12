@@ -22,11 +22,12 @@ from numpy.typing import NDArray
 
 from pyst2110 import _layout
 from pyst2110.geometry import (
-    line_bytes,
     packets_per_frame,
     packets_per_line,
     pgroup,
+    raster_offset,
     rows_per_field,
+    sample_offset,
 )
 from pyst2110.sdp import RTP_CLOCK_RATE, SdpVideo, validate_payload_type
 
@@ -120,7 +121,7 @@ class FrameHeaders:
         UDP limit, a raster with no rows or more than the row number field
         holds, or a payload type or SSRC outside its field.
         """
-        group_bytes, group_pixels = pgroup(video)
+        group_bytes, _ = pgroup(video)
         if payload_size % group_bytes:
             raise ValueError(
                 f"a payload of {payload_size} octets is not a whole number of "
@@ -182,8 +183,7 @@ class FrameHeaders:
         # position the SRD Offset carries. RFC 4175 section 4.2 counts that
         # offset in pixels — "increments by one for each pixel" — where the
         # length beside it counts octets (§spec:geometry).
-        offset_bytes = self._index % per_line * payload_size
-        offset_pixels = (offset_bytes // group_bytes * group_pixels).astype(np.int64)
+        offset_pixels = sample_offset(video, self._index % per_line * payload_size)
 
         #: Where in the frame buffer each packet's payload starts, in octets.
         #: The transmit-side counterpart of a receive descriptor: a consumer
@@ -191,9 +191,9 @@ class FrameHeaders:
         #: second field sits below the like-numbered rows of the first, so
         #: field 1 row *r* is frame row 2r+1 (ST 2110-20 section 6.1.5).
         frame_row = line * _FIELDS_PER_FRAME + field if video.interlaced else line
-        self.frame_offset: NDArray[np.int64] = (
-            frame_row * line_bytes(video) + offset_bytes
-        ).astype(np.int64)
+        self.frame_offset: NDArray[np.int64] = raster_offset(
+            video, frame_row, offset_pixels
+        )
 
         # The marker ends a frame, or a field when interlaced (section 6.1.2).
         marker = np.zeros(self.packets, dtype=np.bool_)

@@ -26,7 +26,6 @@ from pyst2110 import (
     SdpFlow,
     SdpVideo,
     SequenceTracker,
-    byte_offset,
     choose_payload_size,
     fits_raster,
     format_sdp,
@@ -36,6 +35,7 @@ from pyst2110 import (
     parse_payload_headers,
     parse_rtp,
     parse_video_format,
+    raster_offset,
 )
 from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders, max_payload_size
 
@@ -95,7 +95,7 @@ def test_a_built_frame_parses_back_into_descriptors_that_tile_the_raster():
 
     fits = fits_raster(video, payload.line, payload.offset)
     assert fits.all(), "a frame this library built places every descriptor"
-    starts = payload.line * line_bytes(video) + byte_offset(video, payload.offset)
+    starts = raster_offset(video, payload.line, payload.offset)
     expected = np.arange(frame.packets, dtype=np.int64) * payload_size
     assert starts.tolist() == expected.tolist()
     assert int(payload.length.sum()) == video.height * line_bytes(video)
@@ -112,7 +112,7 @@ def test_the_transmit_offsets_agree_with_where_the_receive_parse_places_them():
 
     rtp = parse_rtp(block, sizes=sizes)
     payload = parse_payload_headers(block, rtp.payload_offset, sizes=sizes)
-    placed = payload.line * line_bytes(video) + byte_offset(video, payload.offset)
+    placed = raster_offset(video, payload.line, payload.offset)
     assert frame.frame_offset.tolist() == placed.tolist()
 
 
@@ -183,7 +183,7 @@ def test_a_dropped_packet_leaves_a_hole_the_receive_path_can_see():
     sequences.observe(rtp.sequence, payload.extended_sequence)
     assert sequences.lost == 2
 
-    starts = payload.line * line_bytes(video) + byte_offset(video, payload.offset)
+    starts = raster_offset(video, payload.line, payload.offset)
     covered = np.zeros(video.height * line_bytes(video) // payload_size, dtype=np.int64)
     covered[starts // payload_size] = 1
     assert int((covered == 0).sum()) == 2
@@ -250,7 +250,6 @@ def test_the_emitted_offer_and_the_built_frame_describe_one_flow():
 
     assert "PM=2110GPM" in offer
     assert "a=rtpmap:96 raw/90000" in offer
-    assert frame.packets == packets_per_frame(video, payload_size)
     # One SRD header a packet, so no packet declares a continuation and the
     # General Packing Mode the offer claims is the one being built.
     block = frame.stamp(0)

@@ -49,7 +49,7 @@ raster and a consumer places only those:
 
 ```python
 fits = fits_raster(video, payload.line, payload.offset)
-starts = payload.line[fits] * line_bytes(video) + byte_offset(video, payload.offset[fits])
+starts = raster_offset(video, payload.line[fits], payload.offset[fits])
 ```
 
 Sending is the same shape in reverse. A frame's headers are built once
