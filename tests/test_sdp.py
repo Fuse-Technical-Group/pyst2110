@@ -1,9 +1,10 @@
 """Reading and writing a flow and a video format as an SDP (SPEC §spec:sdp).
 
-Vectors are written by hand from RFC 4566 and ST 2110-20, not round-tripped
-through a writer of ours. The round trip is checked too, as the additional
-property it is: it proves the pair agree with each other, and the fixed
-vectors are what tie either of them to the documents (§spec:testing).
+Vectors are written by hand from RFC 4566, RFC 4570, ST 2110-10, ST 2110-20
+and ST 2110-21, not round-tripped through a writer of ours. The round trip is
+checked too, as the additional property it is: it proves the pair agree with
+each other, and the fixed vectors are what tie either of them to the
+documents (§spec:testing).
 """
 
 from __future__ import annotations
@@ -243,13 +244,36 @@ _OFFER_LINES = [
     "c=IN IP4 239.100.0.1/64",
     "a=source-filter: incl IN IP4 239.100.0.1 192.168.100.2",
     "a=rtpmap:96 raw/90000",
-    # ST 2110-20 section 7.2, in the order the standard lists them. Entries are
-    # "separated by the semicolon character followed by whitespace" with "no
-    # semicolon character after the last item" (section 7.1).
+    # ST 2110-20 section 7.2, in the order the standard lists them, then the
+    # one ST 2110-21 section 8.1 adds. Entries are "separated by the semicolon
+    # character followed by whitespace" with "no semicolon character after the
+    # last item" (2110-20 section 7.1).
     "a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; "
     "exactframerate=60000/1001; depth=10; colorimetry=BT709; PM=2110GPM; "
-    "SSN=ST2110-20:2017",
+    "SSN=ST2110-20:2017; TP=2110TPN",
 ]
+
+# SMPTE ST 2110-20 section 7.2, "Required Media Type Parameters": the eight a
+# sender "shall include ... in the a=fmtp clause of the SDP for all streams
+# conforming to this standard".
+_ST2110_20_REQUIRED = frozenset(
+    {
+        "sampling",
+        "depth",
+        "width",
+        "height",
+        "exactframerate",
+        "colorimetry",
+        "PM",
+        "SSN",
+    }
+)
+
+# SMPTE ST 2110-21 section 8.1, "Required Parameters": the *additional*
+# parameter a sender "shall include in the a=fmtp clause of the SDP for all
+# video RTP streams conforming to this standard". It lives in -21 rather than
+# -20, so a conformance review of -20 alone does not see it.
+_ST2110_21_REQUIRED = frozenset({"TP"})
 
 
 def test_an_emitted_offer_is_the_document_rfc_4566_and_st_2110_20_require():
@@ -265,18 +289,79 @@ def test_records_end_with_crlf():
 
 
 def test_every_required_media_type_parameter_is_present():
-    """ST 2110-20 section 7.2 names eight, and a sender "shall include" them."""
+    """A sender's required set is not one document's. ST 2110-20 section 7.2
+    names eight and ST 2110-21 section 8.1 adds TP, so an offer carrying only
+    the first eight is a stream a conformant receiver has grounds to refuse.
+    """
     fmtp = _fmtp(format_sdp(_FLOW, _VIDEO))
-    assert set(fmtp) == {
-        "sampling",
-        "width",
-        "height",
-        "exactframerate",
-        "depth",
-        "colorimetry",
-        "PM",
-        "SSN",
-    }
+    assert set(fmtp) == _ST2110_20_REQUIRED | _ST2110_21_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"interlaced": True},
+        {"max_udp": 8960},
+        {"colorimetry": "ALPHA"},
+        {"interlaced": True, "max_udp": 8960, "depth": 12, "sampling": "RGB"},
+    ],
+)
+def test_no_optional_parameter_displaces_a_required_one(overrides: dict):
+    """The set above is what an offer must carry whatever else it carries. The
+    section 7.3 parameters are written by their difference from a default, and
+    a required one must not be able to go missing behind that."""
+    fmtp = _fmtp(format_sdp(_FLOW, video(**overrides)))
+    assert set(fmtp) >= _ST2110_20_REQUIRED | _ST2110_21_REQUIRED
+
+
+def test_the_sender_signals_its_traffic_shape_because_st_2110_21_requires_it():
+    """Section 8.1: TP "signals the type of the sender as defined in section
+    7.1", and section 7.1.2 fixes Type N's token as 2110TPN."""
+    assert _fmtp(format_sdp(_FLOW, _VIDEO))["TP"] == "2110TPN"
+
+
+@pytest.mark.parametrize(
+    "sender_type",
+    # ST 2110-21 section 7.1.1: a sender "shall conform to one or more of the
+    # types defined in clauses 7.1.2, 7.1.3, or 7.1.4". Each of those clauses
+    # ends "shall signal compliance with a Media Type Parameter TP of value
+    # <token>" — Narrow, Narrow Linear and Wide, spelled as the standard
+    # prints them.
+    ["2110TPN", "2110TPNL", "2110TPW"],
+)
+def test_every_sender_type_the_standard_defines_can_be_signalled(sender_type: str):
+    fmtp = _fmtp(format_sdp(_FLOW, _VIDEO, sender_type=sender_type))
+    assert fmtp["TP"] == sender_type
+
+
+@pytest.mark.parametrize(
+    "sender_type",
+    [
+        "2110TPX",  # not a type
+        "",
+        "narrow",  # the prose name, not the token
+        "2110TPn",  # the tokens are printed uppercase
+        # A forged parameter: reparsed, the packing mode reads Block and the
+        # sizing a peer computes changes.
+        "2110TPN; PM=2110BPM",
+        "2110TPN\r\nc=IN IP4 6.6.6.6",
+    ],
+)
+def test_a_sender_type_st_2110_21_does_not_define_is_refused(sender_type: str):
+    """A TP is a claim about pacing a receiver provisions its buffer from, so
+    an unrecognised one is refused rather than passed through."""
+    with pytest.raises(ValueError, match="TP"):
+        format_sdp(_FLOW, _VIDEO, sender_type=sender_type)
+
+
+def test_the_sender_type_follows_the_parameters_of_the_document_that_owns_it():
+    """ST 2110-21 section 8.1 calls TP "additional" to 2110-20's set, so it is
+    written after them — and before the section 7.3 parameters, which are
+    written only by their difference from a default."""
+    fmtp = list(_fmtp(format_sdp(_FLOW, video(interlaced=True, max_udp=8960))))
+    assert fmtp.index("SSN") < fmtp.index("TP") < fmtp.index("interlace")
+    assert fmtp.index("TP") < fmtp.index("MAXUDP")
 
 
 def test_an_integer_frame_rate_is_a_single_decimal_number():
@@ -323,14 +408,45 @@ def test_a_unicast_destination_carries_no_ttl():
 def test_an_ipv6_multicast_destination_carries_no_ttl():
     """RFC 4566 section 5.7: "the TTL value MUST NOT be present for IPv6"."""
     flow = SdpFlow("ff3e::8000:1", 20000)
-    assert "c=IN IP6 ff3e::8000:1\r\n" in format_sdp(flow, _VIDEO)
+    text = format_sdp(flow, _VIDEO, any_source=True)
+    assert "c=IN IP6 ff3e::8000:1\r\n" in text
 
 
-def test_no_source_filter_means_the_line_is_absent_rather_than_empty():
-    text = format_sdp(SdpFlow("239.100.0.1", 20000), _VIDEO)
+def test_a_multicast_offer_that_names_no_sender_is_refused():
+    """ST 2110-10 section 8.4: a sender "should indicate the source address
+    information for streams within the SDP in order to support source-specific
+    multicast sessions by use of an inclusive source filter line". A transmit
+    offer has a sender and knows its address, so leaving the line out is
+    almost always a caller that forgot rather than one that meant it — and a
+    transmit SDK refuses the offer without it."""
+    with pytest.raises(ValueError, match="any_source"):
+        format_sdp(SdpFlow("239.100.0.1", 20000), _VIDEO)
+
+
+def test_an_any_source_multicast_offer_may_still_omit_the_filter():
+    """RFC 4570 section 3.1: "the default behavior when a source-filter
+    attribute is not provided in a session description is that all traffic
+    sent to the specified <connection-address> value should be accepted (i.e.,
+    from any source address)". That is a real session, so it stays reachable
+    — as a statement rather than as the default."""
+    text = format_sdp(SdpFlow("239.100.0.1", 20000), _VIDEO, any_source=True)
     assert "source-filter" not in text
     # With no sender to name, the origin falls back to the unspecified address.
     assert "o=- 0 0 IN IP4 0.0.0.0\r\n" in text
+
+
+def test_naming_a_sender_and_offering_the_group_to_any_source_contradict():
+    """The two say opposite things about who may send, so an offer that says
+    both says nothing this library will guess between."""
+    with pytest.raises(ValueError, match="any_source"):
+        format_sdp(_FLOW, _VIDEO, any_source=True)
+
+
+def test_a_unicast_offer_needs_no_source_filter():
+    """RFC 4570's filter selects among the senders to a group, and ST 2110-10
+    section 8.4 asks for the line "in order to support source-specific
+    multicast sessions". A unicast flow has no group and no such choice."""
+    assert "source-filter" not in format_sdp(SdpFlow("192.0.2.10", 20000), _VIDEO)
 
 
 def test_a_session_id_makes_the_origin_unique_when_a_caller_needs_it():
@@ -427,13 +543,30 @@ def test_the_address_written_is_the_one_that_was_parsed():
     assert "a=source-filter: incl IN IP6 ff3e::8000:1 2001:db8::1\r\n" in text
 
 
-def test_a_source_filter_over_two_families_names_neither():
-    """RFC 4570 section 3 allows the wildcard address type, which a v4
-    destination filtering a v6 source needs: naming either family describes
-    the other address wrongly."""
-    flow = SdpFlow("239.100.0.1", 20000, "2001:db8::1")
-    assert "a=source-filter: incl IN * 239.100.0.1 2001:db8::1\r\n" in format_sdp(
-        flow, _VIDEO
+@pytest.mark.parametrize(
+    "flow",
+    [
+        SdpFlow("239.100.0.1", 20000, "2001:db8::1"),
+        SdpFlow("ff3e::8000:1", 20000, "192.168.100.2"),
+    ],
+)
+def test_a_source_filter_spanning_two_address_families_is_refused(flow: SdpFlow):
+    """RFC 4570 section 3 gives the filter one <address-types> for both
+    addresses, and section 3.1 bounds the wildcard that would cover two:
+    "When the <addrtype> value is the '*' wildcard, the <dest-address> MUST be
+    either an FQDN or '*' (i.e., it MUST NOT be an IPv4 or IPv6 address)".
+    This library writes IP literals, so the mixed pair has no legal spelling —
+    and no packet either, a v6 sender reaching no v4 group."""
+    with pytest.raises(ValueError, match="address famil"):
+        format_sdp(flow, _VIDEO)
+
+
+def test_a_source_filter_names_the_one_family_both_addresses_share():
+    """RFC 4570 section 3: <address-types> "identifies the address family, and
+    for the purpose of this document may be either <addrtype> value 'IP4' or
+    'IP6'". ST 2110-10 section 8.4's example is the IP4 form."""
+    assert "a=source-filter: incl IN IP4 239.100.0.1 192.168.100.2\r\n" in format_sdp(
+        _FLOW, _VIDEO
     )
 
 
@@ -498,16 +631,19 @@ def test_a_payload_type_outside_the_seven_bit_field_is_refused():
 
 
 @pytest.mark.parametrize(
-    "flow",
+    ("flow", "any_source"),
     [
-        SdpFlow("239.100.0.1", 20000, "192.168.100.2"),
-        SdpFlow("239.100.0.1", 20000),
-        SdpFlow("192.0.2.10", 5004, "192.0.2.1"),
+        (SdpFlow("239.100.0.1", 20000, "192.168.100.2"), False),
+        (SdpFlow("239.100.0.1", 20000), True),
+        (SdpFlow("192.0.2.10", 5004, "192.0.2.1"), False),
+        (SdpFlow("192.0.2.10", 5004), False),
     ],
 )
-def test_an_emitted_offer_parses_back_to_the_flow_it_described(flow: SdpFlow):
+def test_an_emitted_offer_parses_back_to_the_flow_it_described(
+    flow: SdpFlow, any_source: bool
+):
     """The additional property, not the evidence: reader and writer agree."""
-    assert parse_sdp(format_sdp(flow, _VIDEO)) == flow
+    assert parse_sdp(format_sdp(flow, _VIDEO, any_source=any_source)) == flow
 
 
 @pytest.mark.parametrize(
