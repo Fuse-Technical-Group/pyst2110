@@ -205,34 +205,67 @@ arithmetic above holds.
 
 ## SDP §spec:sdp
 
-*Status: in progress*
+*Status: complete*
 
 Enough of RFC 4566 and ST 2110-20's `a=fmtp:` to name a flow — connection
 address, media port, source filter — and its video format: width, height,
-frame rate, sampling, depth, interlace, and the sender's maximum UDP
-payload.
+frame rate, sampling, depth, colorimetry, interlace, and the sender's
+maximum UDP size.
 
 Parsing and emitting are both here, because a receiver reads an SDP it is
 handed and a transmitter is configured by one it produces. The video format
 it yields is what §spec:geometry computes from.
 
 Colorimetry is carried through, not interpreted. What a consumer does with
-`BT.2020` is its own concern; this library records which token the SDP said.
+`BT2020` is its own concern; this library records which token the SDP said,
+and ST 2110-20 has a token for a colorimetry nobody stated.
+
+A parameter whose absence carries meaning is written only where it differs
+from that meaning. An absent `MAXUDP` *is* the standard limit, so writing
+the default would claim a limit was negotiated when none was.
+
+The ST 2110-10 clock attributes are not written. They name a PTP
+grandmaster and a media clock this library has no model of, and a
+synchronisation claimed but not held is worse than one left to the caller
+that owns it (§road:future).
+
+Strings a caller supplies are validated before they are written, an SDP
+being line-structured: a session name carrying a newline would otherwise
+declare lines of its own.
 
 ## Transmit headers §spec:transmit-headers
 
-*Status: not started*
+*Status: complete*
 
-Building the header block for a frame: RTP headers with the payload type,
-SSRC and marker bit set on the last packet, and RFC 4175 payload headers
-whose line numbers and offsets walk the raster. Built once for a frame
-shape and stamped per frame with its sequence numbers and media timestamp,
-because the layout repeats and only two fields move.
+The header block for a frame: RTP headers carrying the payload type, SSRC
+and the marker that ends a frame, and RFC 4175 payload headers whose line
+numbers and offsets walk the raster. Built once for a frame shape and
+stamped per frame, because the layout repeats and only two fields move.
 
 The **media timestamp** is the RTP clock — 90 kHz for video — sampled at
-the frame's own rate, which is what a receiver locks to. Deriving it from a
-frame index rather than a wall clock keeps a transmitter's timestamps exact
-across arbitrary run lengths.
+the frame's own rate, which is what a receiver locks to. Both it and the
+sequence number derive from a frame index rather than from a running
+counter, so a transmitter's hundred-thousandth frame is as exact as its
+first: a rate of 60000/1001 advances a half tick a frame, which
+accumulating turns into drift and computing from an index does not.
+
+One SRD header a packet. A payload size that divides a line never straddles
+a row, so the continuation bit stays clear — ST 2110-20's General Packing
+Mode, and what the emitted offer declares (§road:future).
+
+The block is **reused**: stamping writes into the array it returned last
+time. Allocating a frame of headers per frame is the cost the split between
+building and stamping exists to avoid, so a caller holding two frames at
+once is the one that copies.
+
+A declared UDP limit bounds the datagram, not the sample data inside it.
+Turning one into the other is a subtraction of the headers, and getting it
+wrong overruns the limit on exactly those rasters whose lines divide in the
+gap — so the conversion is named rather than left to a caller's arithmetic.
+
+Interlace is carried rather than refused, the receive path already
+modelling it: the marker ends each field, each field carries its own
+timestamp, and row numbers restart within a field.
 
 ## Testing §spec:testing
 
