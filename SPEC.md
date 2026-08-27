@@ -410,12 +410,27 @@ reported `2110TPW` as a claim about the numbers, not a re-evaluation
 against Wide's own linear schedule (section 6.5 is what licenses the
 comparison).
 
-One reading is reconstructed rather than read. Table 1's TRO_DEFAULT
-cells for the 525- and 625-line systems are clipped in the published PDF —
+**The edition is the sender's, not the analyzer's.** ST 2110-21 has two
+editions, and clause 6.3.3's gapped interlaced second field is the one
+place they part: the 2022 edition reads it `T_FRAME/2 + T_LINE/2` past the
+datum, the 2017 edition `T_FRAME/2`. The gap is `N_PACKETS/2160` read
+spacings for a 1125-line raster — two whole packet intervals at 4320
+packets a frame — so a sender declaring `SSN=ST2110-20:2017` measured
+against the 2022 schedule reports a phase error it does not have.
+`read_schedule` and `measure` take an `edition`, defaulting to 2022, and
+it shall name the edition the sender was built to. Clauses 6.3.2 and 6.4
+are the same text in both, so no progressive and no linear schedule moves.
+
+One reading comes from the earlier edition. Table 1's TRO_DEFAULT cells
+for the 525- and 625-line systems are clipped in the published 2022 PDF —
 the expression ends at `INT((TOTAL - HEIGHT)/2) +` — so the missing
-summands are chosen to reproduce ST 2110-21:2017's fixed ratios (20/525 at
-487 lines, 26/625 at 576) at the reference heights. The 1125-line cell is
-complete and needs no such choice.
+summands are taken from ST 2110-21:2017 Table 1, whose cells are fixed
+ratios with no HEIGHT term at all: 20/525, 26/625, 22/1125. R_ACTIVE reads
+the same way, fixed per system in 2017 and parameterized by HEIGHT in
+2022. The parameterized form reproduces every 2017 value at the reference
+heights and departs from it at any other — a raster clause 6.3.1 gives no
+gapped schedule at all, so the two editions are not modelled separately
+here.
 
 Not modelled, deferred to §road:future: ST 2110-22 compressed streams
 (their own document), PsF's `segmented` SDP parameter (an SDP declaring it
