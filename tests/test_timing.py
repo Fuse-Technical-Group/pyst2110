@@ -23,6 +23,7 @@ from pyst2110.sdp import (
     SENDER_TYPE_NARROW_LINEAR,
     SENDER_TYPE_WIDE,
     SdpVideo,
+    parse_video_format,
 )
 from pyst2110.timing import (
     Limits,
@@ -516,6 +517,93 @@ def test_the_first_packet_must_start_a_frame():
     starts = np.zeros(times.size, dtype=np.bool_)
     with pytest.raises(ValueError, match="frame"):
         vrx(schedule, times, starts)
+
+
+@pytest.mark.parametrize("length", [2, 100])
+def test_an_rtp_timestamp_column_that_is_not_one_per_packet_is_named(length: int):
+    """Every other per-packet column is checked against the packet count, and
+    this one was indexed without it: two frame starts and a two-element column
+    raised a bare IndexError, and a longer column was accepted and indexed,
+    which is a conformance verdict computed from somebody else's stamps."""
+    schedule = read_schedule(video(), 4)
+    times = np.arange(8, dtype=np.int64) * 1_000 + video_datum(schedule, _EPOCH_FRAME)
+    starts = np.zeros(8, dtype=np.bool_)
+    starts[::4] = True
+    stamps = np.arange(length, dtype=np.int64)
+    with pytest.raises(ValueError, match="RTP timestamp"):
+        vrx(schedule, times, starts, datum="rtp", rtp_timestamps=stamps)
+
+
+# --- Inputs too large for exact 64-bit time --------------------------------
+#
+# Both bounds are on attacker-influenced input: the format arrives in an SDP
+# and the instants come off the wire (SPEC §spec:timing).
+
+# ST 2110-20 section 7.2 bounds width and height at 32767, and the parse
+# bounds exactframerate at the 90 kHz RTP Clock — so this raster is inside
+# every limit either standard sets, at 4161409 packets a frame.
+_HUGE = "sampling=RGB; width=32766; height=32767; exactframerate=1200; depth=12"
+_HUGE_N_PACKETS = 4_161_409
+# 2026 in nanoseconds since the SMPTE epoch, which is what a bench capture of
+# a PTP-locked sender carries.
+_PRESENT_DAY_NS = 1_787_000_000 * _GIGA
+
+
+def huge_video() -> SdpVideo:
+    """The largest format ST 2110-20 and this parse between them permit."""
+    return parse_video_format(
+        "v=0\r\nm=video 20000 RTP/AVP 96\r\nc=IN IP4 239.100.0.1\r\n"
+        f"a=fmtp:96 {_HUGE}; TP={SENDER_TYPE_NARROW}\r\n"
+    )
+
+
+def test_the_huge_formats_packet_count_is_the_geometrys():
+    fmt = huge_video()
+    assert n_packets(fmt) == _HUGE_N_PACKETS
+    assert fmt.frame_rate * _HUGE_N_PACKETS > 4_800_000_000
+
+
+def test_a_drain_grid_too_fine_for_the_epoch_is_refused_by_name():
+    """T_DRAIN here is 182 picoseconds, so a present-day instant is more than
+    2^63 drain instants past the SMPTE epoch and the grid index leaves int64.
+    The bound had covered only the product term, so this arrived as numpy's
+    OverflowError rather than a refusal from this module."""
+    fmt = huge_video()
+    limits = sender_limits(fmt, _HUGE_N_PACKETS)
+    times = _PRESENT_DAY_NS + np.arange(10, dtype=np.int64) * 1_000
+    with pytest.raises(ValueError, match="64-bit"):
+        c_inst(times, limits.t_drain)
+
+
+def test_the_same_capture_measures_rather_than_overflowing_off_the_epoch():
+    """Two things hid this. The threshold is the epoch offset over T_DRAIN, so
+    it shrinks as the epoch advances — an input that passes today fails later.
+    And it is gone under origin="first" and under 1970-based timestamps, which
+    is exactly what a test suite reaches for."""
+    fmt = huge_video()
+    limits = sender_limits(fmt, _HUGE_N_PACKETS)
+    times = _PRESENT_DAY_NS + np.arange(10, dtype=np.int64) * 1_000
+    assert c_inst(times, limits.t_drain, origin="first").max() == 1
+    assert c_inst(np.arange(10, dtype=np.int64) * 1_000, limits.t_drain).max() == 1
+
+
+def test_measure_refuses_the_same_format_by_name():
+    fmt = huge_video()
+    count = 8
+    times = _PRESENT_DAY_NS + np.arange(count, dtype=np.int64) * 1_000
+    marker = end_of_frame_markers(count, 1)
+    with pytest.raises(ValueError, match="64-bit"):
+        measure(fmt, _HUGE_N_PACKETS, times, marker, previous_marker=True)
+
+
+def test_a_frame_index_past_the_int64_nanosecond_grid_is_refused_by_name():
+    """The same unguarded term in the other direction: the datum is
+    ``N * T_FRAME + TR_OFFSET`` in nanoseconds, and a frame index far enough
+    out puts it past 2^63 before any packet index is multiplied."""
+    schedule = read_schedule(video(), _N_1080)
+    with pytest.raises(ValueError, match="64-bit"):
+        read_times(schedule, 10**13, np.array([0, 1]))
+    assert video_datum(schedule, 10**13) > 0  # exact in Python, unclipped
 
 
 # --- Frame starts from the marker bit --------------------------------------

@@ -463,7 +463,7 @@ def vrx(
     within = np.arange(times.size, dtype=np.int64) - start_index[frame_of]
     first_times = times[start_index]
     datums, remainders, den = _datums(
-        schedule, first_times, datum, rtp_timestamps, start_index
+        schedule, first_times, datum, rtp_timestamps, start_index, int(times.size)
     )
 
     # Read k of a segment has passed a packet at integer nanosecond t when
@@ -659,6 +659,7 @@ def _datums(
     datum: str,
     rtp_timestamps: NDArray[np.integer[Any]] | None,
     start_index: NDArray[np.int64],
+    packets: int,
 ) -> tuple[NDArray[np.int64], NDArray[np.int64], int]:
     """T_VD per frame on the anchor ``datum`` names, split for exactness.
 
@@ -682,7 +683,9 @@ def _datums(
     elif datum == "rtp":
         if rtp_timestamps is None:
             raise ValueError("the rtp datum needs the rtp_timestamps column")
-        stamps = _chunk.per_packet(rtp_timestamps, "RTP timestamp")[start_index]
+        stamps = _chunk.per_packet(rtp_timestamps, "RTP timestamp", count=packets)[
+            start_index
+        ]
         # The estimate from the emission time places the 13-hour wrap; the
         # stamp then places the frame inside it.
         ticks = _floor_divide(
@@ -741,6 +744,7 @@ def _split_multiply(
     peak = int(np.abs(counts).max(initial=0)) * abs(scaled) + part
     if peak >= _INT64_LIMIT:
         raise ValueError("the frame span is too wide for exact 64-bit time")
+    _bound_phase(whole, peak, lcm)
     total = counts * scaled + part
     return whole + total // lcm, total % lcm, lcm
 
@@ -762,5 +766,36 @@ def _floor_divide(
     peak = int(np.abs(deltas).max(initial=0)) * each + part
     if peak >= _INT64_LIMIT:
         raise ValueError("the capture is too long for exact 64-bit time")
+    _bound_phase(whole, peak, lcm)
     result: NDArray[np.int64] = whole + (deltas * each + part) // lcm
     return result
+
+
+def _bound_phase(whole: int, peak: int, lcm: int) -> None:
+    """Refuse a phase whose own integer part cannot stay exact in int64.
+
+    The two passes above bound their product term against their inputs. This
+    is the other half of each result: ``floor(phase)``, which the product is
+    offset by, and which those bounds say nothing about. A phase counted from
+    the SMPTE epoch is already some 1.8e18 nanoseconds and climbing, so
+    dividing it by a sub-nanosecond drain period leaves int64 on formats the
+    product term is comfortable with. RGB 32766x32767 at 1200 Hz — inside
+    ST 2110-20 section 7.2's own 32767 bound, and inside the RTP Clock bound
+    the SDP parse puts on the rate — is 4161409 packets a frame, whose T_DRAIN
+    of 182 picoseconds divides a present-day instant into more than 2^63 grid
+    instants. Roughly, the trigger is EXACTFRAMERATE * N_PACKETS >= 4.8e9.
+
+    Two things make it worth naming rather than leaving to numpy's
+    ``OverflowError``. The threshold is **wall-clock dependent** — it is the
+    epoch offset over T_DRAIN, so it shrinks as the epoch advances and an
+    input that passes today fails later. And it disappears under
+    ``origin="first"`` and under 1970-based timestamps, which is exactly what
+    a test suite reaches for.
+
+    ``peak`` bounds the product term, so ``peak // lcm + 1`` bounds what the
+    quotient adds to ``whole``.
+    """
+    if abs(whole) + peak // lcm + 1 >= _INT64_LIMIT:
+        raise ValueError(
+            "the phase since the SMPTE epoch is too large for exact 64-bit time"
+        )
