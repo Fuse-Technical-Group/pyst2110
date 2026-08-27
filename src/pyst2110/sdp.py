@@ -215,7 +215,7 @@ def _media_port(line: str) -> int:
     if len(fields) < 2:
         return 0
     port = fields[1].split("/", 1)[0]
-    if not port.isdigit():
+    if not _decimal(port):
         return 0
     return int(port)
 
@@ -289,9 +289,21 @@ def _optional_integer(parameters: dict[str, str], name: str) -> int | None:
     text = parameters.get(name)
     if text is None:
         return None
-    if not text.isdigit():
+    if not _decimal(text):
         raise ValueError(f"a {name} of {text!r} is not a whole number")
     return int(text)
+
+
+def _decimal(text: str) -> bool:
+    """Whether ``text`` is the ASCII decimal spelling of a whole number.
+
+    ``str.isdigit()`` alone is not that test, and fails it in both directions.
+    It is true of superscripts, which ``int()`` then refuses — so a gate
+    written to name its parameter let ``int()`` choke instead. And it is true
+    of every script's decimal digits, which ``int()`` accepts — so ``TROFF=٣``
+    was read as 3, a value the document does not say.
+    """
+    return text.isascii() and text.isdigit()
 
 
 def _format_parameters(text: str) -> dict[str, str]:
@@ -329,10 +341,35 @@ def _frame_rate(text: str) -> Fraction:
     numerator, separator, denominator = text.partition("/")
     try:
         if separator:
-            return Fraction(int(numerator), int(denominator))
-        return Fraction(int(numerator))
+            rate = Fraction(int(numerator), int(denominator))
+        else:
+            rate = Fraction(int(numerator))
     except (ValueError, ZeroDivisionError) as exc:
         raise ValueError(f"not an exactframerate: {text}") from exc
+    validate_frame_rate(rate)
+    return rate
+
+
+def validate_frame_rate(rate: Fraction) -> None:
+    """Refuse an ``exactframerate`` no sender could be running at.
+
+    Bounded on both sides, and by the same helper both ways: the parse and the
+    emit describe one flow, and two copies of one bound are two chances to
+    disagree about it — which is what this was, the emit refusing a rate at or
+    below zero while the parse admitted one and divided by it.
+
+    A rate at or below zero is not a rate. Above, the bound is the 90 kHz RTP
+    Clock ST 2110-20 section 6.1.3 fixes for video: a frame period shorter
+    than one tick of it gives successive frames the same media timestamp, so
+    the timebase the stream is carried on cannot express the rate. It is also
+    what keeps the frame period from dividing to nothing in the arithmetic
+    downstream of a parse (:mod:`pyst2110.timing`).
+    """
+    if not 0 < rate <= RTP_CLOCK_RATE:
+        raise ValueError(
+            f"an exactframerate of {rate} is outside 0-{RTP_CLOCK_RATE}, the "
+            f"RTP Clock rate ST 2110-20 section 6.1.3 fixes for video"
+        )
 
 
 def _source_address(line: str) -> str:
@@ -486,8 +523,7 @@ def _media_type_parameters(video: SdpVideo, sender_type: str | None) -> str:
             f"ST 2110-20 section 7.4.2 lists"
         )
     _integer(video.max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
-    if video.frame_rate <= 0:
-        raise ValueError(f"an exactframerate of {video.frame_rate} is not a rate")
+    validate_frame_rate(video.frame_rate)
     if sender_type is None:
         sender_type = video.sender_type
     _sender_type(sender_type)

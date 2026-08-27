@@ -174,6 +174,30 @@ def test_a_malformed_frame_rate_is_named():
         parse_video_format(text)
 
 
+@pytest.mark.parametrize("rate", ["0", "0/1", "-50", "-30000/1001", "90001"])
+def test_a_frame_rate_no_sender_could_have_is_refused_on_the_way_in(rate: str):
+    """A rate at or below zero is not a rate, and one above the 90 kHz RTP
+    Clock of ST 2110-20 section 6.1.3 gives successive frames the same media
+    timestamp. Unbounded, a zero divided the parse's own TROFF check and every
+    consumer of ``frame_rate`` after it, and a negative one reached
+    :func:`pyst2110.timing.sender_limits` as a negative T_DRAIN."""
+    text = _ST2110_20.replace("exactframerate=60000/1001", f"exactframerate={rate}")
+    with pytest.raises(ValueError, match="exactframerate"):
+        parse_video_format(text)
+
+
+def test_a_zero_frame_rate_is_refused_before_troff_divides_by_it():
+    """The TROFF bound is a frame period, so the rate is checked first."""
+    text = _ST2110_20.replace("exactframerate=60000/1001", "exactframerate=0; TROFF=10")
+    with pytest.raises(ValueError, match="exactframerate"):
+        parse_video_format(text)
+
+
+def test_the_rtp_clock_rate_itself_is_a_frame_rate_the_parse_accepts():
+    text = _ST2110_20.replace("exactframerate=60000/1001", "exactframerate=90000")
+    assert parse_video_format(text).frame_rate == Fraction(90_000)
+
+
 def test_the_video_format_ignores_another_essence_fmtp():
     """An audio section before the video one must not describe the geometry."""
     text = (
@@ -700,6 +724,24 @@ def test_troff_is_read_in_microseconds_and_absent_means_the_default():
     assert parse_video_format(_ST2110_20).tr_offset_us is None
     text = _ST2110_20.rstrip() + "; TROFF=640\n"
     assert parse_video_format(text).tr_offset_us == 640
+
+
+@pytest.mark.parametrize("value", ["²", "٣", "①"])
+def test_a_troff_of_digits_int_would_not_read_the_same_way_is_refused(value: str):
+    """``str.isdigit()`` is true of superscripts, of every script's decimal
+    digits and of circled numbers. The superscript then dies inside ``int()``,
+    naming the text rather than the parameter; the Arabic-Indic digit is worse
+    — ``int()`` reads it, so TROFF=٣ was silently accepted as 3."""
+    with pytest.raises(ValueError, match="TROFF"):
+        parse_video_format(_ST2110_20.rstrip() + f"; TROFF={value}\n")
+
+
+def test_a_media_port_of_non_ascii_digits_is_not_a_port():
+    """The same idiom in the ``m=`` line: RFC 4566's port is a decimal
+    integer, and ٥٠٠٤ is not the port 5004."""
+    text = "m=video ٥٠٠٤ RTP/AVP 96\nc=IN IP4 239.0.0.1\n"
+    with pytest.raises(ValueError, match="port"):
+        parse_sdp(text)
 
 
 @pytest.mark.parametrize("value", ["-1", "1.5", "640us", "16684"])
