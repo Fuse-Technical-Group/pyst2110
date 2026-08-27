@@ -59,10 +59,21 @@ stride columns wide — and returns one array per field, packet-aligned. That
 is the shape a header-data-split receiver already hands out, and slicing a
 contiguous capture into rows costs nothing.
 
-Payload descriptors are the one exception, and are segment-aligned: the
-continuation flag makes a packet's segment count data-dependent
-(§spec:payload-header), so no packet-aligned array can hold them. They carry
-the row index they came from instead.
+Two kinds of array are aligned to something else, each because a packet is
+not what the value describes.
+
+Payload descriptors are **segment-aligned**: the continuation flag makes a
+packet's segment count data-dependent (§spec:payload-header), so no
+packet-aligned array can hold them. They carry the row index they came from
+instead.
+
+`Vrx.datum_delta_ns` and `Measurement.datum_delta_ns` are **frame-aligned**:
+a frame has one T_VD and one phase error against it (§spec:timing), so the
+value is per frame and not per packet. Their length is the frame count, and
+`frame_starts` is what maps one to the other.
+
+An array that is neither packet-aligned nor named here does not exist. A
+function returning one of these says so in its docstring, beside the shape.
 
 *Why arrays rather than a packet object*: a per-packet Python object at
 250,000 packets a second is not affordable (§req:priorities), and an object
