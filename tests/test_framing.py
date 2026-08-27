@@ -11,7 +11,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from pyst2110.framing import FrameTracker, SequenceTracker, frame_boundaries
+from pyst2110.framing import (
+    FrameTracker,
+    SequenceTracker,
+    frame_boundaries,
+    frame_starts,
+)
 
 
 def test_a_clean_run_has_no_discontinuities():
@@ -316,3 +321,31 @@ def test_a_two_dimensional_marker_column_is_refused():
     tracker = FrameTracker()
     with pytest.raises(ValueError, match="one marker per packet"):
         tracker.observe(np.zeros((4, 2), dtype=bool))
+
+
+# --- Frame starts from the marker bit --------------------------------------
+
+
+def test_a_frame_starts_after_a_marker():
+    marker = np.array([False, False, True, False, True, False])
+    assert frame_starts(marker).tolist() == [False] * 3 + [True, False, True]
+
+
+def test_the_packet_before_the_chunk_can_end_a_frame():
+    marker = np.array([False, True, False])
+    assert frame_starts(marker, previous=True).tolist() == [True, False, True]
+
+
+def test_interlaced_frames_start_on_the_first_field():
+    """The F bit says which field a packet carries (ST 2110-20 section
+    6.1.4), so a frame starts where a field does and F reads first."""
+    marker = np.array([True, False, True, False, True, False, True])
+    field = np.array([False, True, True, False, False, True, True])
+    starts = frame_starts(marker, interlaced=True, field=field, previous=True)
+    assert starts.tolist() == [True, False, False, True, False, False, False]
+
+
+def test_interlaced_frames_without_the_f_bit_pair_the_fields():
+    marker = np.array([False, True, False, True, False, True, False])
+    starts = frame_starts(marker, interlaced=True, previous=True)
+    assert starts.tolist() == [True, False, False, False, True, False, False]

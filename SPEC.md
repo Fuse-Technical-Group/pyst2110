@@ -59,10 +59,21 @@ stride columns wide — and returns one array per field, packet-aligned. That
 is the shape a header-data-split receiver already hands out, and slicing a
 contiguous capture into rows costs nothing.
 
-Payload descriptors are the one exception, and are segment-aligned: the
-continuation flag makes a packet's segment count data-dependent
-(§spec:payload-header), so no packet-aligned array can hold them. They carry
-the row index they came from instead.
+Two kinds of array are aligned to something else, each because a packet is
+not what the value describes.
+
+Payload descriptors are **segment-aligned**: the continuation flag makes a
+packet's segment count data-dependent (§spec:payload-header), so no
+packet-aligned array can hold them. They carry the row index they came from
+instead.
+
+`Vrx.datum_delta_ns` and `Measurement.datum_delta_ns` are **frame-aligned**:
+a frame has one T_VD and one phase error against it (§spec:timing), so the
+value is per frame and not per packet. Their length is the frame count, and
+`frame_starts` is what maps one to the other.
+
+An array that is neither packet-aligned nor named here does not exist. A
+function returning one of these says so in its docstring, beside the shape.
 
 *Why arrays rather than a packet object*: a per-packet Python object at
 250,000 packets a second is not affordable (§req:priorities), and an object
@@ -260,6 +271,12 @@ value and not the default: it exists for senders whose pacing software
 decides, and claiming ninety times the receiver buffer a hardware pacer
 needs misdescribes the sender as surely as claiming too little.
 
+ST 2110-21 section 8.2's optional parameters ride with the format: `TROFF`
+in whole microseconds, bounded inside one frame period as section 6.2
+defines TR_OFFSET, and `CMAX` as the sender's claim about its own peak.
+Both are read as absent-means-default and written only when set, like
+`MAXUDP` above; §spec:timing is what consumes them.
+
 A multicast offer says who may send, and says so deliberately.
 ST 2110-10 section 8.4 asks a sender to signal `a=source-filter`, and
 RFC 4570 makes the line's absence mean the group accepts every sender —
@@ -337,6 +354,75 @@ gap — so the conversion is named rather than left to a caller's arithmetic.
 Interlace is carried rather than refused, the receive path already
 modelling it: the marker ends each field, each field carries its own
 timestamp, and row numbers restart within a field.
+
+## ST 2110-21 timing §spec:timing
+
+*Status: complete*
+
+SMPTE ST 2110-21 constrains when a sender's packets leave: a Packet Read
+Schedule (sections 6.2-6.4) says when each packet of a frame is due, and
+two leaky buckets — the Network Compatibility Model's `C_INST` against
+`C_MAX` (section 6.6.1) and the Virtual Receiver Buffer's level against
+`VRX_FULL` (section 6.6.2) — say whether the actual instants conform.
+`pyst2110.timing` computes all of it: the schedule and its read times, the
+per-type limits of section 7.1, both bucket levels over a capture, and a
+measurement that names the sender type the numbers satisfy.
+
+*Why here rather than in a pacing engine*: the model is protocol
+arithmetic over per-packet timestamps — arrays in, arrays out
+(§spec:interface-shape) — and it names no vendor and no transport
+(§spec:scope-boundary). The same definitions serve both sides: a
+transmitter derives its departure grid from `read_times`, and an analyzer
+judges a capture of anybody's transmitter against the identical schedule.
+The formulas are cited to their sections in the module rather than
+restated here; the tests hold hand-computed values for 1080p50 and
+2160p59.94 against them.
+
+Arithmetic is exact. Schedule constants are `Fraction` seconds, instants
+are integer nanoseconds since the SMPTE Epoch of ST 2059-1 (the PTP epoch,
+TAI), and every division floors over integers, so a 60000/1001 rate never
+rounds until a result leaves as nanoseconds. Both bucket passes are
+closed-form array expressions — the reflected walk of `C_INST` is a
+running minimum, the buffer level a scheduled-read count — checked against
+per-packet reference loops written straight from section 6.6's prose.
+
+**The schedule is realised on the nanosecond grid.** T_PRj is generally a
+fraction of a nanosecond; emission timestamps are integers. A read counts
+as passed once its truncated instant has, which is the instant `read_times`
+emits — otherwise a sender that departs exactly on this library's own grid
+measures one packet high forever, an artifact of sub-nanosecond arithmetic
+no capture resolves.
+
+**Anchoring is the standard's by default, with the measured alternatives
+named.** The drain grid of section 6.6.1 sits at multiples of T_DRAIN
+since the epoch; `origin="first"` anchors it to the first packet instead,
+which is what EBU LIST measures and the only choice for timestamps that
+are not PTP-locked. The frame datum T_VD is the nearest `N x T_FRAME +
+TR_OFFSET` by default; `datum="rtp"` recovers N from the frame's RTP
+timestamp — the RTP Clock timebase section 6.6.2 evaluates on, and the
+anchor that catches a sender misaligned to its own media clock by whole
+frames — and `datum="first-packet"` is LIST's pacing-only measure, which
+forgives any constant phase error.
+
+The measurement's profile is judged on the declared schedule, as LIST
+judges it: a Type N sender whose peaks fit only Type W's limits is
+reported `2110TPW` as a claim about the numbers, not a re-evaluation
+against Wide's own linear schedule (section 6.5 is what licenses the
+comparison).
+
+One reading is reconstructed rather than read. Table 1's TRO_DEFAULT
+cells for the 525- and 625-line systems are clipped in the published PDF —
+the expression ends at `INT((TOTAL - HEIGHT)/2) +` — so the missing
+summands are chosen to reproduce ST 2110-21:2017's fixed ratios (20/525 at
+487 lines, 26/625 at 576) at the reference heights. The 1125-line cell is
+complete and needs no such choice.
+
+Not modelled, deferred to §road:future: ST 2110-22 compressed streams
+(their own document), PsF's `segmented` SDP parameter (an SDP declaring it
+reads as interlaced, which Table 1's 1125-line row happens to cover), and
+field pairing for an interlaced capture that opens mid-frame — pairing
+trusts the RFC 4175 F bit where the caller supplies it and arrival order
+where not.
 
 ## Testing §spec:testing
 

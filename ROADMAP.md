@@ -48,5 +48,10 @@ one consumer's use behind it.
   packs 7x180 octets and spans sample rows with the continuation bit,
   which needs a payload size the geometry here does not compute and a
   multi-SRD builder.
+- **timing-psf-and-field-pairing**: what §spec:timing defers. The
+  `segmented` SDP parameter of ST 2110-20 is not parsed, so PsF reads as
+  interlaced — which Table 1's 1125-line row covers — rather than as the
+  segment schedule it is; and an interlaced capture that opens mid-frame
+  pairs fields by arrival order unless the caller supplies the F bit.
 - **compressed-2110-22**: JPEG XS carries its own payload header
   (RFC 9134) and no raster geometry, so it shares only the RTP parse.

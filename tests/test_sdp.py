@@ -174,6 +174,30 @@ def test_a_malformed_frame_rate_is_named():
         parse_video_format(text)
 
 
+@pytest.mark.parametrize("rate", ["0", "0/1", "-50", "-30000/1001", "90001"])
+def test_a_frame_rate_no_sender_could_have_is_refused_on_the_way_in(rate: str):
+    """A rate at or below zero is not a rate, and one above the 90 kHz RTP
+    Clock of ST 2110-20 section 6.1.3 gives successive frames the same media
+    timestamp. Unbounded, a zero divided the parse's own TROFF check and every
+    consumer of ``frame_rate`` after it, and a negative one reached
+    :func:`pyst2110.timing.sender_limits` as a negative T_DRAIN."""
+    text = _ST2110_20.replace("exactframerate=60000/1001", f"exactframerate={rate}")
+    with pytest.raises(ValueError, match="exactframerate"):
+        parse_video_format(text)
+
+
+def test_a_zero_frame_rate_is_refused_before_troff_divides_by_it():
+    """The TROFF bound is a frame period, so the rate is checked first."""
+    text = _ST2110_20.replace("exactframerate=60000/1001", "exactframerate=0; TROFF=10")
+    with pytest.raises(ValueError, match="exactframerate"):
+        parse_video_format(text)
+
+
+def test_the_rtp_clock_rate_itself_is_a_frame_rate_the_parse_accepts():
+    text = _ST2110_20.replace("exactframerate=60000/1001", "exactframerate=90000")
+    assert parse_video_format(text).frame_rate == Fraction(90_000)
+
+
 def test_the_video_format_ignores_another_essence_fmtp():
     """An audio section before the video one must not describe the geometry."""
     text = (
@@ -668,3 +692,118 @@ def _fmtp(text: str) -> dict[str, str]:
     _, _, rest = line.partition(" ")
     fields = (field.strip().partition("=") for field in rest.split(";"))
     return {name: value for name, _, value in fields}
+
+
+# --- ST 2110-21 section 8 parameters ---------------------------------------
+#
+# Section 8.1 requires TP; section 8.2 permits TROFF, "a positive integer
+# number of microseconds", and CMAX, "an integer number". Both optional
+# parameters carry meaning by their absence — the type's default — so both
+# are read as absent and written only when set (§spec:sdp, §spec:timing).
+
+
+def test_the_sender_type_is_read_off_tp():
+    text = _ST2110_20.rstrip() + "; TP=2110TPW\n"
+    assert parse_video_format(text).sender_type == "2110TPW"
+
+
+def test_an_offer_without_tp_reads_as_narrow():
+    """Section 8.1 makes TP mandatory, so an offer without it is one 2110-21
+    does not describe. Narrow is the strictest type and the emit default, so
+    an undeclared sender is measured against the demanding schedule rather
+    than passed through with no type at all."""
+    assert parse_video_format(_ST2110_20).sender_type == "2110TPN"
+
+
+def test_a_sender_type_the_standard_does_not_define_is_refused_on_the_way_in():
+    with pytest.raises(ValueError, match="TP"):
+        parse_video_format(_ST2110_20.rstrip() + "; TP=2110TPX\n")
+
+
+def test_troff_is_read_in_microseconds_and_absent_means_the_default():
+    assert parse_video_format(_ST2110_20).tr_offset_us is None
+    text = _ST2110_20.rstrip() + "; TROFF=640\n"
+    assert parse_video_format(text).tr_offset_us == 640
+
+
+@pytest.mark.parametrize("value", ["²", "٣", "①"])
+def test_a_troff_of_digits_int_would_not_read_the_same_way_is_refused(value: str):
+    """``str.isdigit()`` is true of superscripts, of every script's decimal
+    digits and of circled numbers. The superscript then dies inside ``int()``,
+    naming the text rather than the parameter; the Arabic-Indic digit is worse
+    — ``int()`` reads it, so TROFF=٣ was silently accepted as 3."""
+    with pytest.raises(ValueError, match="TROFF"):
+        parse_video_format(_ST2110_20.rstrip() + f"; TROFF={value}\n")
+
+
+def test_a_media_port_of_non_ascii_digits_is_not_a_port():
+    """The same idiom in the ``m=`` line: RFC 4566's port is a decimal
+    integer, and ٥٠٠٤ is not the port 5004."""
+    text = "m=video ٥٠٠٤ RTP/AVP 96\nc=IN IP4 239.0.0.1\n"
+    with pytest.raises(ValueError, match="port"):
+        parse_sdp(text)
+
+
+@pytest.mark.parametrize("value", ["-1", "1.5", "640us", "16684"])
+def test_a_troff_outside_a_frame_or_not_a_whole_number_is_refused(value: str):
+    """Section 6.2: TR_OFFSET is the difference between the most recent
+    integer multiple of T_FRAME and T_VD, non-negative — so it lies inside one
+    frame period, which at 60000/1001 is 16683 microseconds and change."""
+    with pytest.raises(ValueError, match="TROFF"):
+        parse_video_format(_ST2110_20.rstrip() + f"; TROFF={value}\n")
+
+
+def test_cmax_is_read_as_the_senders_claim_and_absent_means_the_types():
+    assert parse_video_format(_ST2110_20).cmax is None
+    assert parse_video_format(_ST2110_20.rstrip() + "; CMAX=5\n").cmax == 5
+
+
+def test_a_cmax_that_is_not_a_positive_whole_number_is_refused():
+    with pytest.raises(ValueError, match="CMAX"):
+        parse_video_format(_ST2110_20.rstrip() + "; CMAX=0\n")
+
+
+def test_the_emitted_sender_type_is_the_formats_unless_the_caller_overrides():
+    assert _fmtp(format_sdp(_FLOW, video(sender_type="2110TPW")))["TP"] == "2110TPW"
+    text = format_sdp(_FLOW, video(sender_type="2110TPW"), sender_type="2110TPNL")
+    assert _fmtp(text)["TP"] == "2110TPNL"
+
+
+def test_troff_and_cmax_are_written_only_when_set():
+    assert "TROFF" not in _fmtp(format_sdp(_FLOW, _VIDEO))
+    assert "CMAX" not in _fmtp(format_sdp(_FLOW, _VIDEO))
+    fmtp = _fmtp(format_sdp(_FLOW, video(tr_offset_us=640, cmax=5)))
+    assert fmtp["TROFF"] == "640"
+    assert fmtp["CMAX"] == "5"
+    assert list(fmtp).index("TP") < list(fmtp).index("TROFF") < list(fmtp).index("CMAX")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"tr_offset_us": "640; PM=2110BPM"},
+        {"tr_offset_us": -1},
+        {"tr_offset_us": 16684},
+        {"cmax": 0},
+        {"cmax": True},
+    ],
+)
+def test_an_optional_2110_21_parameter_is_validated_before_it_is_written(
+    overrides: dict,
+):
+    with pytest.raises(ValueError, match=r"TROFF|CMAX"):
+        format_sdp(_FLOW, video(**overrides))
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"sender_type": "2110TPNL"},
+        {"sender_type": "2110TPW", "tr_offset_us": 640, "cmax": 12},
+    ],
+)
+def test_the_2110_21_parameters_parse_back_to_the_format_that_wrote_them(
+    overrides: dict,
+):
+    described = video(**overrides)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described

@@ -20,9 +20,13 @@ from numpy.typing import NDArray
 
 from pyst2110 import _chunk
 
-__all__ = ["FrameTracker", "SequenceTracker", "frame_boundaries"]
+__all__ = ["FrameTracker", "SequenceTracker", "frame_boundaries", "frame_starts"]
 
 _SEQUENCE_SPACE = 1 << 16
+
+# ST 2110-20 section 6.1.5: an interlaced frame is sent as two fields, so an
+# interlaced flow marks twice per frame.
+_FIELDS_PER_FRAME = 2
 
 # RFC 3550 Appendix A.1's constants, for the sixteen-bit RTP field alone. A
 # forward step below MAX_DROPOUT is an ordinary gap; a step landing within
@@ -65,6 +69,46 @@ def frame_boundaries(
     flags = _chunk.per_packet(marker, "marker", dtype=np.bool_)
     prior = np.concatenate(([previous], flags[:-1]))
     return flags & ~prior
+
+
+def frame_starts(
+    marker: NDArray[np.bool_],
+    *,
+    interlaced: bool = False,
+    field: NDArray[np.bool_] | None = None,
+    previous: bool = False,
+) -> NDArray[np.bool_]:
+    """Which packets begin a frame, from the RTP marker column.
+
+    The packet after a marker's rising edge begins the next marked unit
+    (§spec:rtp) — a frame progressive, a field interlaced. ``previous`` is
+    the marker bit of the packet before this chunk; without it the first
+    packet cannot be known to start anything and is not claimed to.
+
+    Interlaced, a frame is two units, as :class:`FrameTracker` counts them.
+    ``field`` — the F bit of
+    :func:`pyst2110.payload.parse_payload_headers` — says which unit starts
+    a frame: the one whose first packet reads first-field. Without it the
+    units are paired in arrival order from the first unit start, which is
+    wrong when the capture opens on a second field; pass the F bit where the
+    stream carries one.
+    """
+    ends = frame_boundaries(marker, previous=previous)
+    if ends.size == 0:
+        return np.zeros(0, dtype=np.bool_)
+    starts: NDArray[np.bool_] = np.concatenate(([previous], ends[:-1]))
+    if not interlaced:
+        return starts
+    if field is not None:
+        first = _chunk.per_packet(
+            field, "field flag", count=int(ends.size), plural="field flags"
+        )
+        paired: NDArray[np.bool_] = starts & ~first.astype(np.bool_)
+        return paired
+    keep = np.flatnonzero(starts)[::_FIELDS_PER_FRAME]
+    paired = np.zeros(ends.shape, dtype=np.bool_)
+    paired[keep] = True
+    return paired
 
 
 class FrameTracker:
