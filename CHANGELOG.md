@@ -1,3 +1,17 @@
+# [0.4.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.3.1...v0.4.0) (2026-08-27)
+
+
+### Bug Fixes
+
+* **sdp:** bound exactframerate and read only ASCII decimal digits ([6b99c11](https://github.com/Fuse-Technical-Group/pyst2110/commit/6b99c11f892f38545355a7c6885cfebdc176e653))
+* **timing:** bound the phase term, and count the RTP timestamp column ([2473885](https://github.com/Fuse-Technical-Group/pyst2110/commit/2473885d099e4cad6c945d36d921a364210cb599))
+
+
+### Features
+
+* **sdp:** carry the ST 2110-21 section 8 parameters both ways ([db4dd4f](https://github.com/Fuse-Technical-Group/pyst2110/commit/db4dd4ffbc6be3c4da066da52e73f4b1957991af))
+* **timing:** model ST 2110-21 schedules, limits and traffic buckets ([fac8ee2](https://github.com/Fuse-Technical-Group/pyst2110/commit/fac8ee20cf164f478455c58c9e37db272b051854))
+
 ## [0.3.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.3.0...v0.3.1) (2026-08-12)
 
 
