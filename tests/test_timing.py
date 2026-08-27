@@ -29,7 +29,6 @@ from pyst2110.timing import (
     Limits,
     Schedule,
     c_inst,
-    frame_starts,
     measure,
     read_schedule,
     read_times,
@@ -606,34 +605,6 @@ def test_a_frame_index_past_the_int64_nanosecond_grid_is_refused_by_name():
     assert video_datum(schedule, 10**13) > 0  # exact in Python, unclipped
 
 
-# --- Frame starts from the marker bit --------------------------------------
-
-
-def test_a_frame_starts_after_a_marker():
-    marker = np.array([False, False, True, False, True, False])
-    assert frame_starts(marker).tolist() == [False] * 3 + [True, False, True]
-
-
-def test_the_packet_before_the_chunk_can_end_a_frame():
-    marker = np.array([False, True, False])
-    assert frame_starts(marker, previous=True).tolist() == [True, False, True]
-
-
-def test_interlaced_frames_start_on_the_first_field():
-    """The F bit says which field a packet carries (ST 2110-20 section
-    6.1.4), so a frame starts where a field does and F reads first."""
-    marker = np.array([True, False, True, False, True, False, True])
-    field = np.array([False, True, True, False, False, True, True])
-    starts = frame_starts(marker, interlaced=True, field=field, previous=True)
-    assert starts.tolist() == [True, False, False, True, False, False, False]
-
-
-def test_interlaced_frames_without_the_f_bit_pair_the_fields():
-    marker = np.array([False, True, False, True, False, True, False])
-    starts = frame_starts(marker, interlaced=True, previous=True)
-    assert starts.tolist() == [True, False, False, False, True, False, False]
-
-
 # --- The measurement -------------------------------------------------------
 
 
@@ -651,7 +622,7 @@ def test_an_ideal_narrow_sender_measures_as_type_n():
     # The histograms count every packet once.
     assert result.c_inst_histogram.sum() == result.packets
     assert result.vrx_histogram.sum() == result.packets
-    assert result.vrx_histogram[0 - result.vrx_histogram_start] == result.packets
+    assert result.vrx_histogram[0 - result.vrx_min] == result.packets
 
 
 def test_a_sender_bursting_a_whole_frame_measures_as_non_compliant():

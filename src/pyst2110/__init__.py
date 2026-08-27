@@ -11,6 +11,7 @@ Nothing here needs a NIC, a licence or a vendor SDK.
 from pyst2110.framing import FrameTracker as FrameTracker
 from pyst2110.framing import SequenceTracker as SequenceTracker
 from pyst2110.framing import frame_boundaries as frame_boundaries
+from pyst2110.framing import frame_starts as frame_starts
 from pyst2110.geometry import byte_offset as byte_offset
 from pyst2110.geometry import choose_payload_size as choose_payload_size
 from pyst2110.geometry import fits_raster as fits_raster
@@ -42,7 +43,6 @@ from pyst2110.timing import Measurement as Measurement
 from pyst2110.timing import Schedule as Schedule
 from pyst2110.timing import Vrx as Vrx
 from pyst2110.timing import c_inst as c_inst
-from pyst2110.timing import frame_starts as frame_starts
 from pyst2110.timing import measure as measure
 from pyst2110.timing import read_schedule as read_schedule
 from pyst2110.timing import read_times as read_times

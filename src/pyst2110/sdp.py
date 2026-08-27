@@ -255,7 +255,7 @@ def parse_video_format(text: str) -> SdpVideo:
     # one section 8.1 does not permit; Narrow is what it is read as, for the
     # reasons SdpVideo.sender_type gives.
     sender_type = parameters.get("TP", SENDER_TYPE_NARROW)
-    _sender_type(sender_type)
+    validate_sender_type(sender_type)
     tr_offset_us = _optional_integer(parameters, "TROFF")
     if tr_offset_us is not None:
         _tr_offset(tr_offset_us, frame_rate)
@@ -526,7 +526,7 @@ def _media_type_parameters(video: SdpVideo, sender_type: str | None) -> str:
     validate_frame_rate(video.frame_rate)
     if sender_type is None:
         sender_type = video.sender_type
-    _sender_type(sender_type)
+    validate_sender_type(sender_type)
     if video.tr_offset_us is not None:
         _tr_offset(video.tr_offset_us, video.frame_rate)
     if video.cmax is not None:
@@ -573,11 +573,15 @@ def _exact_frame_rate(rate: Fraction) -> str:
     return f"{rate.numerator}/{rate.denominator}"
 
 
-def _sender_type(value: str) -> None:
+def validate_sender_type(value: str) -> None:
     """Refuse a ``TP`` that is not one ST 2110-21 section 7.1 defines.
 
     A TP is a claim about pacing a receiver provisions its buffer from, and
     the same claim on the way in and on the way out (§spec:sdp).
+
+    Package-internal, and shared with :mod:`pyst2110.timing`, which resolves
+    the same token against a caller's override: two copies of one bound are
+    two chances to disagree about it.
     """
     if value not in SENDER_TYPES:
         raise ValueError(

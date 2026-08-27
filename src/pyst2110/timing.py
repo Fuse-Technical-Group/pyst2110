@@ -23,20 +23,21 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
 
 from pyst2110 import _chunk
-from pyst2110.framing import frame_boundaries
+from pyst2110.framing import frame_starts
 from pyst2110.sdp import (
     RTP_CLOCK_RATE,
     SENDER_TYPE_NARROW,
+    SENDER_TYPE_NARROW_LINEAR,
     SENDER_TYPE_WIDE,
-    SENDER_TYPES,
     STANDARD_UDP_SIZE_LIMIT,
     SdpVideo,
+    validate_sender_type,
 )
 
 __all__ = [
@@ -75,23 +76,40 @@ _TRO_SHORT = Fraction(28, 750)
 _INTERLACED_SYSTEMS = ((487, 525, 1), (576, 625, 2), (1080, 1125, 0))
 _FIELDS_PER_FRAME = 2
 
-# Section 7.1: beta = 1.10 for every sender type, and the type parameters of
-# 7.1.2 (Type N), 7.1.3 (Type NL) and 7.1.4 (Type W). The VRX_FULL numerators
+# Section 7.1: beta = 1.10 for every sender type. The VRX_FULL numerators
 # assume MAXUDP = 1500 under the Standard UDP Size Limit; a declared MAXUDP
 # scales them (each clause's closing paragraph).
 _BETA = Fraction(11, 10)
 _ASSUMED_MAXUDP = 1500
-_NARROW_VRX_OCTETS = 1500 * 8
-_WIDE_VRX_OCTETS = 1500 * 720
-_NARROW_VRX_DIVISOR = 27000
-_WIDE_VRX_DIVISOR = 300
-_NARROW_CMAX_FLOOR = 4
-_WIDE_CMAX_FLOOR = 16
-_NARROW_CMAX_DIVISOR = 43200
-_WIDE_CMAX_DIVISOR = 21600
 # Section 7.1.4: "The CMAX definition above shall only apply to streams of
 # less than 900000 packets/second."
 _WIDE_CMAX_PACKET_RATE = 900_000
+
+
+class _TypeParameters(NamedTuple):
+    """One sender type's row of section 7.1, as the clauses write it.
+
+    Both bounds are a MAX of a floor and a constant:
+
+        VRX_FULL = MAX(INT(vrx_octets/MAXUDP), INT(N_PACKETS/(vrx_divisor * T_FRAME)))
+        C_MAX    = MAX(cmax_floor, INT(N_PACKETS/(cmax_divisor * T_FRAME)))
+    """
+
+    #: The VRX_FULL numerator over MAXUDP, at the assumed 1500 octets.
+    vrx_octets: int
+    vrx_divisor: int
+    cmax_floor: int
+    cmax_divisor: int
+
+
+# Sections 7.1.2 (Type N), 7.1.3 (Type NL) and 7.1.4 (Type W). Types N and NL
+# share every constant: what separates them is the gapped model's R_ACTIVE in
+# Type N's C_MAX divisor, which is one of the two branches below.
+_SECTION_7_1 = {
+    SENDER_TYPE_NARROW: _TypeParameters(_ASSUMED_MAXUDP * 8, 27_000, 4, 43_200),
+    SENDER_TYPE_NARROW_LINEAR: _TypeParameters(_ASSUMED_MAXUDP * 8, 27_000, 4, 43_200),
+    SENDER_TYPE_WIDE: _TypeParameters(_ASSUMED_MAXUDP * 720, 300, 16, 21_600),
+}
 
 # RFC 3550 section 5.1: the RTP timestamp wraps at thirty-two bits.
 _TIMESTAMP_MODULUS = 1 << 32
@@ -168,9 +186,11 @@ class Measurement:
     limits: Limits
     #: Packet counts by C_INST value, indexed by the value itself.
     c_inst_histogram: NDArray[np.int64]
-    #: Packet counts by VRX level, indexed from ``vrx_histogram_start``.
+    #: Packet counts by VRX level, indexed from :attr:`vrx_min` — which is
+    #: the histogram's start, and is not restated as a field of its own.
     vrx_histogram: NDArray[np.int64]
-    vrx_histogram_start: int
+    #: :attr:`Vrx.datum_delta_ns` for the frames measured — one per frame, not
+    #: one per packet (§spec:interface-shape).
     datum_delta_ns: NDArray[np.int64]
 
 
@@ -196,15 +216,12 @@ def read_schedule(
     Table 1 row at all, an interlaced raster above 1125 total lines, which
     raises.
     """
-    kind = _sender_type(video, sender_type)
-    if n_packets <= 0:
-        raise ValueError(f"a frame of {n_packets} packets is not a stream")
-    t_frame = 1 / video.frame_rate
+    kind, t_frame = _resolve(video, n_packets, sender_type)
     gapped = kind == SENDER_TYPE_NARROW
 
     # Section 6.4: the linear model's TRO_DEFAULT is the gapped model's for
     # the same raster, so both shapes need the gapped parameters.
-    r_active, tro_default, _ = _gapped_parameters(video)
+    r_active, tro_default = _gapped_parameters(video)
     override = video.tr_offset_us if tr_offset_us is None else tr_offset_us
     if override is None:
         tr_offset = tro_default * t_frame
@@ -242,40 +259,26 @@ def sender_limits(
     Limit and the declared ``MAXUDP`` otherwise, as each clause's closing
     paragraph directs — not the 1460-octet limit itself.
     """
-    kind = _sender_type(video, sender_type)
-    if n_packets <= 0:
-        raise ValueError(f"a frame of {n_packets} packets is not a stream")
-    t_frame = 1 / video.frame_rate
+    kind, t_frame = _resolve(video, n_packets, sender_type)
     maxudp = (
         _ASSUMED_MAXUDP if video.max_udp == STANDARD_UDP_SIZE_LIMIT else video.max_udp
     )
+    row = _SECTION_7_1[kind]
+    vrx_full = max(
+        row.vrx_octets // maxudp,
+        math.floor(n_packets / (row.vrx_divisor * t_frame)),
+    )
 
-    cmax: int | None
-    if kind == SENDER_TYPE_WIDE:
-        # Section 7.1.4.
-        vrx_full = max(
-            _WIDE_VRX_OCTETS // maxudp,
-            math.floor(n_packets / (_WIDE_VRX_DIVISOR * t_frame)),
-        )
-        if n_packets / t_frame < _WIDE_CMAX_PACKET_RATE:
-            cmax = max(
-                _WIDE_CMAX_FLOOR,
-                math.floor(n_packets / (_WIDE_CMAX_DIVISOR * t_frame)),
-            )
-        else:
-            cmax = None
-    else:
-        # Sections 7.1.2 and 7.1.3 share VRX_FULL; their C_MAX divisors
-        # differ by exactly the gapped model's R_ACTIVE.
-        vrx_full = max(
-            _NARROW_VRX_OCTETS // maxudp,
-            math.floor(n_packets / (_NARROW_VRX_DIVISOR * t_frame)),
-        )
-        divisor = _NARROW_CMAX_DIVISOR * t_frame
-        if kind == SENDER_TYPE_NARROW:
-            r_active, _, _ = _gapped_parameters(video)
-            divisor *= r_active
-        cmax = max(_NARROW_CMAX_FLOOR, math.floor(n_packets / divisor))
+    divisor = row.cmax_divisor * t_frame
+    if kind == SENDER_TYPE_NARROW:
+        # Section 7.1.2's divisor carries the gapped model's R_ACTIVE, which
+        # is the whole of what separates it from section 7.1.3's.
+        divisor *= _gapped_parameters(video)[0]
+    cmax: int | None = max(row.cmax_floor, math.floor(n_packets / divisor))
+    if kind == SENDER_TYPE_WIDE and n_packets / t_frame >= _WIDE_CMAX_PACKET_RATE:
+        # Section 7.1.4 defines no bound above that packet rate, so none is
+        # invented.
+        cmax = None
 
     # Section 6.6.1: T_DRAIN = (T_FRAME / N_PACKETS) * (1 / beta).
     return Limits(
@@ -355,9 +358,20 @@ def c_inst(
     ``q = arange(n) - d``, the level is ``1 + q - running_minimum(q)`` — the
     reflected walk in closed form. O(n) time, no Python loop.
     """
+    return _c_inst(_emission_order(timestamps_ns), t_drain, origin)
+
+
+def _c_inst(
+    times: NDArray[np.int64], t_drain: Fraction, origin: str
+) -> NDArray[np.int64]:
+    """The pass itself, over instants a caller above has already ordered.
+
+    Split from the public shell so :func:`measure`, which runs both buckets
+    over one capture, sweeps it for emission order once instead of three
+    times — at 250,000 packets a second the sweep is not free (§req:priorities).
+    """
     if origin not in ("epoch", "first"):
         raise ValueError(f"{origin!r} is not a drain origin: 'epoch' or 'first'")
-    times = _emission_order(timestamps_ns)
     if times.size == 0:
         return np.zeros(0, dtype=np.int64)
     period = t_drain * _GIGA
@@ -367,46 +381,6 @@ def c_inst(
     walk = np.arange(times.size, dtype=np.int64) - drains
     fullness: NDArray[np.int64] = 1 + walk - np.minimum.accumulate(walk)
     return fullness
-
-
-def frame_starts(
-    marker: NDArray[np.bool_],
-    *,
-    interlaced: bool = False,
-    field: NDArray[np.bool_] | None = None,
-    previous: bool = False,
-) -> NDArray[np.bool_]:
-    """Which packets begin a frame, from the RTP marker column.
-
-    The packet after a marker's rising edge begins the next marked unit
-    (§spec:rtp) — a frame progressive, a field interlaced. ``previous`` is
-    the marker bit of the packet before this chunk; without it the first
-    packet cannot be known to start anything and is not claimed to.
-
-    Interlaced, a frame is two units. ``field`` — the F bit of
-    :func:`pyst2110.payload.parse_payload_headers` — says which unit starts
-    a frame: the one whose first packet reads first-field. Without it the
-    units are paired in arrival order from the first unit start, which is
-    wrong when the capture opens on a second field; pass the F bit where the
-    stream carries one.
-    """
-    flags = _chunk.per_packet(marker, "marker", dtype=np.bool_)
-    if flags.size == 0:
-        return np.zeros(0, dtype=np.bool_)
-    ends = frame_boundaries(flags, previous=previous)
-    starts: NDArray[np.bool_] = np.concatenate(([previous], ends[:-1]))
-    if not interlaced:
-        return starts
-    if field is not None:
-        first = _chunk.per_packet(
-            field, "field flag", count=int(flags.size), plural="field flags"
-        )
-        paired: NDArray[np.bool_] = starts & ~first.astype(np.bool_)
-        return paired
-    keep = np.flatnonzero(starts)[::_FIELDS_PER_FRAME]
-    paired = np.zeros(flags.shape, dtype=np.bool_)
-    paired[keep] = True
-    return paired
 
 
 def vrx(
@@ -445,7 +419,20 @@ def vrx(
       T_FRAME per observed frame — EBU LIST's alternative, which measures
       pacing alone and forgives any constant phase error against PTP.
     """
-    times = _emission_order(timestamps_ns)
+    return _vrx(schedule, _emission_order(timestamps_ns), starts, datum, rtp_timestamps)
+
+
+def _vrx(
+    schedule: Schedule,
+    times: NDArray[np.int64],
+    starts: NDArray[np.bool_],
+    datum: str,
+    rtp_timestamps: NDArray[np.integer[Any]] | None,
+) -> Vrx:
+    """The pass itself, over instants a caller above has already ordered.
+
+    Split from the public shell for the reason :func:`_c_inst` is.
+    """
     flags = _chunk.per_packet(
         starts, "frame start", count=int(times.size), plural="frame starts"
     ).astype(np.bool_)
@@ -540,13 +527,15 @@ def measure(
     keep = slice(int(first[0]), None)
     times = times[keep]
 
-    fullness = c_inst(times, declared.t_drain, origin=origin)
-    buffer = vrx(
+    # Both cores, not the public shells: the capture was swept for emission
+    # order once, above, and a slice of an ordered array is ordered.
+    fullness = _c_inst(times, declared.t_drain, origin)
+    buffer = _vrx(
         schedule,
         times,
         starts[keep],
-        datum=datum,
-        rtp_timestamps=None if rtp_timestamps is None else rtp_timestamps[keep],
+        datum,
+        None if rtp_timestamps is None else rtp_timestamps[keep],
     )
     c_max = int(fullness.max())
     vrx_max = int(buffer.per_packet.max())
@@ -562,7 +551,6 @@ def measure(
         limits=declared,
         c_inst_histogram=np.bincount(fullness).astype(np.int64),
         vrx_histogram=np.bincount(buffer.per_packet - vrx_min).astype(np.int64),
-        vrx_histogram_start=vrx_min,
         datum_delta_ns=buffer.datum_delta_ns,
     )
 
@@ -585,18 +573,24 @@ def _profile(
     return ""
 
 
-def _sender_type(video: SdpVideo, override: str | None) -> str:
+def _resolve(
+    video: SdpVideo, n_packets: int, override: str | None
+) -> tuple[str, Fraction]:
+    """The sender type and frame period a schedule and its limits both open on.
+
+    ``read_schedule`` and ``sender_limits`` describe one stream and are read
+    together, so they resolve the type, check the packet count and take the
+    frame period once and here.
+    """
     kind = video.sender_type if override is None else override
-    if kind not in SENDER_TYPES:
-        raise ValueError(
-            f"a TP of {kind!r} is not one of the {list(SENDER_TYPES)} sender "
-            f"types ST 2110-21 section 7.1 defines"
-        )
-    return kind
+    validate_sender_type(kind)
+    if n_packets <= 0:
+        raise ValueError(f"a frame of {n_packets} packets is not a stream")
+    return kind, 1 / video.frame_rate
 
 
-def _gapped_parameters(video: SdpVideo) -> tuple[Fraction, Fraction, int]:
-    """R_ACTIVE, TRO_DEFAULT as a fraction of T_FRAME, and the total lines.
+def _gapped_parameters(video: SdpVideo) -> tuple[Fraction, Fraction]:
+    """R_ACTIVE and TRO_DEFAULT as a fraction of T_FRAME.
 
     Sections 6.3.2 (progressive) and 6.3.3 with Table 1 (interlaced and
     PsF). PsF is not distinguishable from progressive in an SDP's bare
@@ -605,15 +599,11 @@ def _gapped_parameters(video: SdpVideo) -> tuple[Fraction, Fraction, int]:
     if not video.interlaced:
         active = _PROGRESSIVE_ACTIVE
         tall = video.height >= _PROGRESSIVE_TALL
-        return active, _TRO_TALL if tall else _TRO_SHORT, 0
+        return active, _TRO_TALL if tall else _TRO_SHORT
     total = _total_lines(video)
     added = next(add for _, lines, add in _INTERLACED_SYSTEMS if lines == total)
     blanking = (total - video.height) // _FIELDS_PER_FRAME
-    return (
-        Fraction(video.height, total),
-        Fraction(blanking + added, total),
-        total,
-    )
+    return Fraction(video.height, total), Fraction(blanking + added, total)
 
 
 def _total_lines(video: SdpVideo) -> int:
@@ -635,13 +625,14 @@ def _segments(schedule: Schedule) -> list[tuple[Fraction, int, int]]:
     interlaced, the second offset by ``T_FRAME/2 + T_LINE/2`` and indexed
     from ``N_PACKETS/2`` — kept exact, so an odd packet count keeps the
     half-step section 6.3.3's expression gives it.
+
+    ``t_line`` carries the decision: :func:`read_schedule` sets it on exactly
+    the gapped interlaced schedule, which is exactly the two-run case.
     """
-    if not (schedule.gapped and schedule.interlaced):
+    if schedule.t_line is None:
         return [(Fraction(0), 0, schedule.n_packets)]
     half = Fraction(schedule.n_packets, _FIELDS_PER_FRAME)
     first = math.ceil(half)
-    if schedule.t_line is None:  # pragma: no cover - read_schedule sets it
-        raise ValueError("a gapped interlaced schedule carries t_line")
     offset = (
         schedule.t_frame / _FIELDS_PER_FRAME
         + schedule.t_line / _FIELDS_PER_FRAME
