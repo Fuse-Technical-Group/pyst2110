@@ -12,6 +12,10 @@ Nothing here paces a packet or timestamps one. Emission instants come from
 whatever captured them; this module says what the standard makes of them
 (§spec:scope-boundary).
 
+Clause numbers are ST 2110-21:2022's. The two editions of the document
+differ in one place this module models — clause 6.3.3's gapped interlaced
+second field — and :attr:`Schedule.edition` selects between them.
+
 Time is exact. Schedule constants are :class:`~fractions.Fraction` seconds,
 instants are integer nanoseconds since the SMPTE Epoch (ST 2059-1, the PTP
 epoch), and every division is a floor over integers — a 60000/1001 rate
@@ -69,12 +73,22 @@ _TRO_SHORT = Fraction(28, 750)
 # lines, offset lines added to the halved blanking). R_ACTIVE = HEIGHT/total
 # and TRO_DEFAULT = ((INT((total - HEIGHT)/2) + added)/total) * T_FRAME.
 #
-# The published PDF clips the added term out of the 525- and 625-line rows —
-# the cell ends at "INT((total - HEIGHT)/2) +" — so those two values are
-# reconstructed to reproduce ST 2110-21:2017's fixed ratios (20/525 at 487
-# lines, 26/625 at 576) at the reference heights (SPEC §spec:timing).
+# The published 2022 PDF clips the added term out of the 525- and 625-line
+# rows — the cell ends at "INT((total - HEIGHT)/2) +" — so those two values
+# are read from the 2017 edition's Table 1 instead, whose cells are fixed
+# ratios with no HEIGHT term at all: 20/525, 26/625, 22/1125
+# (https://pub.smpte.org/doc/st2110-21/20171122-pub/). The parameterised
+# form reproduces all three at the reference heights, and departs from them
+# at any other — a raster the gapped PRS of section 6.3.1 does not cover
+# (SPEC §spec:timing).
 _INTERLACED_SYSTEMS = ((487, 525, 1), (576, 625, 2), (1080, 1125, 0))
 _FIELDS_PER_FRAME = 2
+
+# The editions of ST 2110-21 this models, newest last. They part in one
+# clause: 6.3.3's gapped interlaced second field, which the 2022 edition
+# reads T_LINE/2 later than the 2017 edition does. Clauses 6.3.2 and 6.4 —
+# every progressive and every linear schedule — are the same text in both.
+_EDITIONS = ("2017", "2022")
 
 # Section 7.1: beta = 1.10 for every sender type. The VRX_FULL numerators
 # assume MAXUDP = 1500 under the Standard UDP Size Limit; a declared MAXUDP
@@ -125,9 +139,10 @@ class Schedule:
     """One stream's Packet Read Schedule, sections 6.2-6.4.
 
     All constants are exact :class:`~fractions.Fraction` seconds. ``gapped``
-    says which of the two PRS shapes this is; ``t_line`` is Table 1's
-    T_LINE and carried only by the gapped interlaced schedule, whose second
-    field's reads sit ``t_frame/2 + t_line/2`` past the first's.
+    says which of the two PRS shapes this is; ``t_line`` is T_LINE and
+    carried only by the gapped interlaced schedule, whose second field's
+    reads sit ``t_frame/2`` past the first's, plus ``t_line/2`` where
+    :attr:`edition` is the 2022 one.
     """
 
     t_frame: Fraction
@@ -140,6 +155,13 @@ class Schedule:
     t_rs: Fraction
     tr_offset: Fraction
     t_line: Fraction | None = None
+    #: Which edition of section 6.3.3 the gapped interlaced second field
+    #: follows: the 2022 edition adds T_LINE/2 to the 2017 edition's
+    #: T_FRAME/2. It is a property of the sender being measured and not a
+    #: preference — a sender declaring ``SSN=ST2110-20:2017`` was paced to
+    #: the 2017 schedule, and reading it against the 2022 one reports a
+    #: phase error it does not have. No other schedule moves.
+    edition: Literal["2017", "2022"] = "2022"
 
 
 @dataclass(frozen=True)
@@ -200,6 +222,7 @@ def read_schedule(
     *,
     sender_type: str | None = None,
     tr_offset_us: int | None = None,
+    edition: Literal["2017", "2022"] = "2022",
 ) -> Schedule:
     """The Packet Read Schedule for this format and sender type.
 
@@ -210,12 +233,27 @@ def read_schedule(
     (section 6.4). ``tr_offset_us`` overrides the format's ``TROFF``; with
     neither, TRO_DEFAULT is computed from the raster (sections 6.3.2, 6.3.3).
 
+    ``edition`` names the edition of ST 2110-21 the sender was built to and
+    changes exactly one thing: the gapped interlaced second field of section
+    6.3.3, which the 2022 edition reads T_LINE/2 later than the 2017 edition
+    does. It defaults to the current edition. Sections 6.3.2 and 6.4 are the
+    same text in both, so a progressive or a linear schedule is identical
+    either way. Name the sender's own edition — a stream declaring
+    ``SSN=ST2110-20:2017`` measured against the 2022 schedule reads as
+    early by N_PACKETS/2160 packet intervals for a whole field, which is a
+    verdict about the wrong document rather than about the sender.
+
     The gapped PRS is defined only for rasters and rates from the ITU-R
     recommendations section 6.3.1 lists. That ancestry is not checkable from
     a width and a height, so it is not checked — except the one case with no
     Table 1 row at all, an interlaced raster above 1125 total lines, which
     raises.
     """
+    if edition not in _EDITIONS:
+        raise ValueError(
+            f"{edition!r} is not an edition of ST 2110-21 this models: "
+            f"{list(_EDITIONS)}"
+        )
     kind, t_frame = _resolve(video, n_packets, sender_type)
     gapped = kind == SENDER_TYPE_NARROW
 
@@ -247,6 +285,7 @@ def read_schedule(
         t_rs=t_rs,
         tr_offset=tr_offset,
         t_line=t_frame / _total_lines(video) if gapped and video.interlaced else None,
+        edition=edition,
     )
 
 
@@ -306,7 +345,8 @@ def read_times(
 
     Sections 6.3.2 and 6.4: ``j * T_RS`` past the datum. Section 6.3.3 for
     the gapped interlaced schedule: the second field's packets sit a further
-    ``T_FRAME/2 + T_LINE/2`` on, counted from ``j - N_PACKETS/2``. Each
+    ``T_FRAME/2`` on — plus ``T_LINE/2`` under the 2022 edition
+    (:attr:`Schedule.edition`) — counted from ``j - N_PACKETS/2``. Each
     instant is truncated to the nanosecond, as :func:`video_datum` is, so an
     ideal sender's emission never lands before its own read.
 
@@ -490,6 +530,7 @@ def measure(
     *,
     sender_type: str | None = None,
     tr_offset_us: int | None = None,
+    edition: Literal["2017", "2022"] = "2022",
     datum: Literal["ideal", "rtp", "first-packet"] = "ideal",
     origin: Literal["epoch", "first"] = "epoch",
     rtp_timestamps: NDArray[np.integer[Any]] | None = None,
@@ -504,6 +545,10 @@ def measure(
     arguments pass through to :func:`read_schedule`, :func:`c_inst`,
     :func:`frame_starts` and :func:`vrx`.
 
+    ``edition`` is the sender's, not the analyzer's: a stream declaring
+    ``SSN=ST2110-20:2017`` shall be measured against the 2017 schedule it
+    was built to, or its verdict describes a document it never claimed.
+
     The profile ladder is judged on the declared schedule, as EBU LIST
     judges it: an underflow is non-compliant outright; peaks inside the
     declared type's limits are that type; otherwise peaks inside Type W's
@@ -511,7 +556,11 @@ def measure(
     schedule, which a Type N declaration was not measured against.
     """
     schedule = read_schedule(
-        video, n_packets, sender_type=sender_type, tr_offset_us=tr_offset_us
+        video,
+        n_packets,
+        sender_type=sender_type,
+        tr_offset_us=tr_offset_us,
+        edition=edition,
     )
     declared = sender_limits(video, n_packets, sender_type=sender_type)
     times = _emission_order(timestamps_ns)
@@ -622,22 +671,25 @@ def _segments(schedule: Schedule) -> list[tuple[Fraction, int, int]]:
 
     Each run's reads sit at ``offset + k * t_rs`` for ``k`` up to ``count``.
     One run for the linear and gapped progressive schedules; two for gapped
-    interlaced, the second offset by ``T_FRAME/2 + T_LINE/2`` and indexed
-    from ``N_PACKETS/2`` — kept exact, so an odd packet count keeps the
-    half-step section 6.3.3's expression gives it.
+    interlaced, the second offset by ``T_FRAME/2`` and indexed from
+    ``N_PACKETS/2`` — kept exact, so an odd packet count keeps the half-step
+    section 6.3.3's expression gives it.
 
-    ``t_line`` carries the decision: :func:`read_schedule` sets it on exactly
-    the gapped interlaced schedule, which is exactly the two-run case.
+    That offset is where the two editions of section 6.3.3 part, and the
+    only place they do: the 2022 edition adds a further ``T_LINE/2``, for
+    which the 2017 expression has no term. Sections 6.3.2 and 6.4, the
+    one-run case below, are the same text in both.
+
+    ``t_line`` carries the two-run decision: :func:`read_schedule` sets it on
+    exactly the gapped interlaced schedule, in either edition.
     """
     if schedule.t_line is None:
         return [(Fraction(0), 0, schedule.n_packets)]
     half = Fraction(schedule.n_packets, _FIELDS_PER_FRAME)
     first = math.ceil(half)
-    offset = (
-        schedule.t_frame / _FIELDS_PER_FRAME
-        + schedule.t_line / _FIELDS_PER_FRAME
-        + (first - half) * schedule.t_rs
-    )
+    offset = schedule.t_frame / _FIELDS_PER_FRAME + (first - half) * schedule.t_rs
+    if schedule.edition == "2022":
+        offset += schedule.t_line / _FIELDS_PER_FRAME
     return [
         (Fraction(0), 0, first),
         (offset, first, schedule.n_packets - first),

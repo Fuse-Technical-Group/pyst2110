@@ -11,6 +11,7 @@ vectorised passes must agree with it on jittered random senders
 
 from __future__ import annotations
 
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any
 
@@ -236,6 +237,78 @@ def test_interlaced_read_times_gap_between_the_fields():
     assert times.tolist() == [782_222, 19_973_333, 20_800_000]
 
 
+def test_the_2017_interlaced_second_field_reads_half_a_frame_past_the_datum():
+    """ST 2110-21:2017 section 6.3.3 has no T_LINE/2 term: the second
+    field's reads sit T_FRAME/2 past the datum, so packet N/2 of 1080i25
+    reads 17.8 us before where the 2022 edition puts it."""
+    fmt = video(frame_rate=Fraction(25), interlaced=True)
+    schedule = read_schedule(fmt, _N_1080, edition="2017")
+    assert schedule.edition == "2017"
+    j = np.array([0, _N_1080 // 2 - 1, _N_1080 // 2])
+    times = read_times(schedule, 0, j)
+    assert times.tolist() == [782_222, 19_973_333, 20_782_222]
+
+
+def test_the_editions_differ_by_two_packet_intervals_at_1125_lines():
+    """(T_LINE/2)/T_RS = N_PACKETS/2160 for a 1125-line raster, which is
+    exactly 2 at 4320 packets a frame: every 2022 read of the second field
+    lands on the 2017 read of the packet two later, to the nanosecond."""
+    fmt = video(frame_rate=Fraction(25), interlaced=True)
+    lag = _N_1080 // 2160
+    assert lag == 2
+    later = read_schedule(fmt, _N_1080)
+    earlier = read_schedule(fmt, _N_1080, edition="2017")
+    j = np.arange(_N_1080 // 2, _N_1080 - lag)
+    assert read_times(later, 0, j).tolist() == read_times(earlier, 0, j + lag).tolist()
+    # The first field is the same schedule in both editions.
+    first = np.arange(_N_1080 // 2)
+    assert (
+        read_times(later, 0, first).tolist() == read_times(earlier, 0, first).tolist()
+    )
+
+
+@pytest.mark.parametrize(
+    ("fmt", "count"),
+    [
+        (video(), _N_1080),
+        (video(width=1280, height=720), n_packets(video(width=1280, height=720))),
+        (video(sender_type=SENDER_TYPE_NARROW_LINEAR), _N_1080),
+        (video(sender_type=SENDER_TYPE_WIDE), _N_1080),
+        (
+            video(
+                frame_rate=Fraction(25),
+                interlaced=True,
+                sender_type=SENDER_TYPE_NARROW_LINEAR,
+            ),
+            _N_1080,
+        ),
+    ],
+)
+def test_only_the_gapped_interlaced_schedule_moved_between_the_editions(
+    fmt: SdpVideo, count: int
+):
+    """Sections 6.3.2 and 6.4 are word for word the same in both editions;
+    the 2017 and 2022 schedules differ nowhere but 6.3.3's second field."""
+    later = read_schedule(fmt, count)
+    earlier = read_schedule(fmt, count, edition="2017")
+    assert replace(earlier, edition="2022") == later
+    j = np.arange(count)
+    assert read_times(later, 0, j).tolist() == read_times(earlier, 0, j).tolist()
+
+
+def test_the_schedule_defaults_to_the_2022_edition():
+    """An edition is a property of the sender being measured, and the
+    current one is what a caller naming none gets."""
+    fmt = video(frame_rate=Fraction(25), interlaced=True)
+    assert read_schedule(fmt, _N_1080).edition == "2022"
+    assert read_schedule(video(), _N_1080).edition == "2022"
+
+
+def test_an_edition_the_library_does_not_model_is_refused():
+    with pytest.raises(ValueError, match="edition"):
+        read_schedule(video(), _N_1080, edition="2015")  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     ("height", "rate", "expected"),
     [
@@ -281,6 +354,14 @@ def ideal_times(schedule: Schedule, frames: int) -> np.ndarray:
 def end_of_frame_markers(count: int, frames: int) -> np.ndarray:
     marker = np.zeros(count * frames, dtype=np.bool_)
     marker[count - 1 :: count] = True
+    return marker
+
+
+def end_of_field_markers(count: int, frames: int) -> np.ndarray:
+    """ST 2110-20 section 6.1.2 marks the last packet of each field, so an
+    interlaced frame of ``count`` packets carries two marker bits."""
+    marker = np.zeros(count * frames, dtype=np.bool_)
+    marker[count // 2 - 1 :: count // 2] = True
     return marker
 
 
@@ -677,6 +758,23 @@ def test_a_declared_wide_sender_is_judged_against_wide_alone():
     marker = end_of_frame_markers(_N_1080, 2)
     result = measure(fmt, _N_1080, times, marker, previous_marker=True)
     assert result.profile == SENDER_TYPE_WIDE
+
+
+def test_a_sender_paced_to_the_2017_schedule_is_measured_against_it():
+    """A sender declaring SSN=ST2110-20:2017 was built to the 2017 second
+    field, and reads as an early sender against the 2022 one: two packet
+    intervals of the difference, so a full first field of the frame sits
+    ahead of the schedule the later edition would read it on."""
+    fmt = video(frame_rate=Fraction(25), interlaced=True)
+    schedule = read_schedule(fmt, _N_1080, edition="2017")
+    times = ideal_times(schedule, 2)
+    marker = end_of_field_markers(_N_1080, 2)
+    own = measure(fmt, _N_1080, times, marker, previous_marker=True, edition="2017")
+    assert own.profile == SENDER_TYPE_NARROW
+    assert own.vrx_max == 0
+    assert own.vrx_min == 0
+    later = measure(fmt, _N_1080, times, marker, previous_marker=True)
+    assert later.vrx_max == _N_1080 // 2160
 
 
 def test_the_declared_limits_ride_along_for_the_report():
