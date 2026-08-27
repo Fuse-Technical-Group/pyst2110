@@ -15,6 +15,7 @@ Colorimetry is carried through, not interpreted: what a consumer does with
 from __future__ import annotations
 
 import ipaddress
+import math
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -89,6 +90,10 @@ _MAX_UDP_SIZE = _layout.U16_MODULUS - 1
 _MAX_PAYLOAD_TYPE = _layout.PAYLOAD_TYPE_MASK
 _DEFAULT_PAYLOAD_TYPE = _layout.DYNAMIC_PAYLOAD_TYPE
 _MAX_TTL = 255
+# ST 2110-21 section 8.2's TROFF is expressed in microseconds; its CMAX is
+# "an integer number", bounded here only by the field a count could fill.
+_MICROSECONDS_PER_SECOND = 1_000_000
+_MAX_CMAX = _layout.U32_MODULUS - 1
 # RFC 4566 section 5.2 wants the session id "based on a 64-bit NTP timestamp".
 _MAX_SESSION_ID = (1 << 64) - 1
 # ST 2110-20 section 7.4.2 lists the depths a sender may declare. 16f is
@@ -126,6 +131,20 @@ class SdpVideo:
     interlaced: bool = False
     #: The largest UDP payload the sender will emit, from ``MAXUDP``.
     max_udp: int = STANDARD_UDP_SIZE_LIMIT
+    #: The sender's ST 2110-21 type, from ``TP``: one of :data:`SENDER_TYPES`.
+    #: It describes the pacing of whatever puts the packets on the wire, so
+    #: the caller that owns the pacer owns the value (SPEC §spec:sdp). Narrow
+    #: where an offer names none, that being the strictest type and the one
+    #: a hardware pacer fed by this library's headers is.
+    sender_type: str = SENDER_TYPE_NARROW
+    #: ``TROFF``, ST 2110-21 section 8.2: the sender's TR_OFFSET in whole
+    #: microseconds where it differs from the type's default; ``None`` is the
+    #: default, which :func:`pyst2110.timing.read_schedule` computes.
+    tr_offset_us: int | None = None
+    #: ``CMAX``, section 8.2: the largest C_INST the sender claims to emit;
+    #: ``None`` leaves the claim at the type's own limit. Carried, not
+    #: enforced — a sender's claim is what a measurement is compared with.
+    cmax: int | None = None
 
     @property
     def frame_interval_ns(self) -> int:
@@ -229,18 +248,50 @@ def parse_video_format(text: str) -> SdpVideo:
     _integer(width, "width", 1, _MAX_RASTER)
     _integer(height, "height", 1, _MAX_RASTER)
     _integer(max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
+    frame_rate = _frame_rate(parameters["exactframerate"])
+
+    # ST 2110-21 section 8: TP is required and TROFF and CMAX optional, each
+    # optional one meaning its default by its absence. An offer without TP is
+    # one section 8.1 does not permit; Narrow is what it is read as, for the
+    # reasons SdpVideo.sender_type gives.
+    sender_type = parameters.get("TP", SENDER_TYPE_NARROW)
+    _sender_type(sender_type)
+    tr_offset_us = _optional_integer(parameters, "TROFF")
+    if tr_offset_us is not None:
+        _tr_offset(tr_offset_us, frame_rate)
+    cmax = _optional_integer(parameters, "CMAX")
+    if cmax is not None:
+        _integer(cmax, "CMAX", 1, _MAX_CMAX)
 
     return SdpVideo(
         width=width,
         height=height,
-        frame_rate=_frame_rate(parameters["exactframerate"]),
+        frame_rate=frame_rate,
         depth=int(parameters.get("depth", 10)),
         sampling=parameters.get("sampling", ""),
         colorimetry=parameters.get("colorimetry", _UNSPECIFIED),
         # A flag with no value: SMPTE ST 2110-20 writes bare "interlace".
         interlaced="interlace" in parameters,
         max_udp=max_udp,
+        sender_type=sender_type,
+        tr_offset_us=tr_offset_us,
+        cmax=cmax,
     )
+
+
+def _optional_integer(parameters: dict[str, str], name: str) -> int | None:
+    """A media type parameter's value as a whole number, or ``None`` if absent.
+
+    ``int()`` accepts more than a parameter may carry — a sign, surrounding
+    whitespace, underscores — so the digits are checked first, and the error
+    names the parameter rather than the text ``int()`` choked on.
+    """
+    text = parameters.get(name)
+    if text is None:
+        return None
+    if not text.isdigit():
+        raise ValueError(f"a {name} of {text!r} is not a whole number")
+    return int(text)
 
 
 def _format_parameters(text: str) -> dict[str, str]:
@@ -302,7 +353,7 @@ def format_sdp(
     video: SdpVideo,
     *,
     payload_type: int = _DEFAULT_PAYLOAD_TYPE,
-    sender_type: str = SENDER_TYPE_NARROW,
+    sender_type: str | None = None,
     any_source: bool = False,
     session_name: str = " ",
     session_id: int = 0,
@@ -319,7 +370,11 @@ def format_sdp(
     ``sender_type`` is the ``TP`` parameter, one of :data:`SENDER_TYPES`. It
     describes the pacing of whatever puts the packets on the wire, which is
     not this library (§spec:scope-boundary), so the caller that owns the pacer
-    owns the value; the default is documented in SPEC §spec:sdp.
+    owns the value: ``video.sender_type`` by default, and this argument where
+    a caller sets one on the way out. The default is documented in SPEC
+    §spec:sdp. The optional ``TROFF`` and ``CMAX`` of ST 2110-21 section 8.2
+    are written from ``video`` where it carries them, and absent otherwise —
+    absence being what means the default.
 
     A **multicast** offer says who may send. ``SdpFlow.source_ip`` names the
     sender and writes the ``a=source-filter`` line ST 2110-10 section 8.4 asks
@@ -407,7 +462,7 @@ def format_sdp(
     return "".join(f"{line}\r\n" for line in lines)
 
 
-def _media_type_parameters(video: SdpVideo, sender_type: str) -> str:
+def _media_type_parameters(video: SdpVideo, sender_type: str | None) -> str:
     """The ``a=fmtp:`` parameters for a format, in ST 2110-20 section 7 order.
 
     Section 7.1 fixes the punctuation: entries "separated by the semicolon
@@ -433,11 +488,13 @@ def _media_type_parameters(video: SdpVideo, sender_type: str) -> str:
     _integer(video.max_udp, "MAXUDP", 1, _MAX_UDP_SIZE)
     if video.frame_rate <= 0:
         raise ValueError(f"an exactframerate of {video.frame_rate} is not a rate")
-    if sender_type not in SENDER_TYPES:
-        raise ValueError(
-            f"a TP of {sender_type!r} is not one of the {list(SENDER_TYPES)} "
-            f"sender types ST 2110-21 section 7.1 defines"
-        )
+    if sender_type is None:
+        sender_type = video.sender_type
+    _sender_type(sender_type)
+    if video.tr_offset_us is not None:
+        _tr_offset(video.tr_offset_us, video.frame_rate)
+    if video.cmax is not None:
+        _integer(video.cmax, "CMAX", 1, _MAX_CMAX)
 
     parameters = [
         f"sampling={video.sampling}",
@@ -450,6 +507,13 @@ def _media_type_parameters(video: SdpVideo, sender_type: str) -> str:
         f"SSN={_standard_number(video.colorimetry)}",
         f"TP={sender_type}",
     ]
+    # ST 2110-21 section 8.2's optional parameters, beside the section 8.1 one
+    # that shares their document, and each only where it differs from the
+    # default its absence means.
+    if video.tr_offset_us is not None:
+        parameters.append(f"TROFF={video.tr_offset_us}")
+    if video.cmax is not None:
+        parameters.append(f"CMAX={video.cmax}")
     if video.interlaced:
         parameters.append("interlace")
     if video.max_udp != STANDARD_UDP_SIZE_LIMIT:
@@ -471,6 +535,32 @@ def _exact_frame_rate(rate: Fraction) -> str:
     if rate.denominator == 1:
         return str(rate.numerator)
     return f"{rate.numerator}/{rate.denominator}"
+
+
+def _sender_type(value: str) -> None:
+    """Refuse a ``TP`` that is not one ST 2110-21 section 7.1 defines.
+
+    A TP is a claim about pacing a receiver provisions its buffer from, and
+    the same claim on the way in and on the way out (§spec:sdp).
+    """
+    if value not in SENDER_TYPES:
+        raise ValueError(
+            f"a TP of {value!r} is not one of the {list(SENDER_TYPES)} "
+            f"sender types ST 2110-21 section 7.1 defines"
+        )
+
+
+def _tr_offset(value: object, frame_rate: Fraction) -> None:
+    """Refuse a ``TROFF`` that is not a whole number of microseconds in a frame.
+
+    ST 2110-21 section 8.2 makes the value "a positive integer number of
+    microseconds", and section 6.2 makes TR_OFFSET the difference between the
+    most recent frame boundary and T_VD — so it lies inside one frame period,
+    which is the bound.
+    """
+    period_us = _MICROSECONDS_PER_SECOND / frame_rate
+    last_inside = math.ceil(period_us) - 1
+    _integer(value, "TROFF", 0, last_inside)
 
 
 def _token(value: str, name: str) -> None:
