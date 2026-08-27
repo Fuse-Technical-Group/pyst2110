@@ -1,3 +1,10 @@
+# [0.5.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.4.0...v0.5.0) (2026-08-27)
+
+
+### Features
+
+* **timing:** select the ST 2110-21 edition the sender was built to ([3e6d2a5](https://github.com/Fuse-Technical-Group/pyst2110/commit/3e6d2a570d9f2cda11890d87c6a83e0e00373d64))
+
 # [0.4.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.3.1...v0.4.0) (2026-08-27)
 
 
