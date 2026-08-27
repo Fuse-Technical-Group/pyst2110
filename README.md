@@ -11,7 +11,7 @@ SDP.
 | Layer | Owns |
 | --- | --- |
 | A transport binding (a NIC binding, a socket, a capture file) | Moving bytes |
-| **pyst2110** | RTP + RFC 4175 headers, geometry, SDP |
+| **pyst2110** | RTP + RFC 4175 headers, geometry, SDP, ST 2110-21 timing |
 | The consuming runtime | Pixels — packing, unpacking, colour |
 
 The layer between a transport and a raster: it says what packet headers
@@ -95,8 +95,10 @@ docstrings there are the authority; `help(pyst2110)` is the index.
 
 Both paths are built: SDP parsing and emit, the RFC 3550 header parse,
 format geometry, sequence and frame tracking, RFC 4175 payload
-descriptors, and the transmit header block. What is not built is listed
-in [ROADMAP.md](ROADMAP.md).
+descriptors, the transmit header block, and the ST 2110-21 timing model —
+read schedules, sender limits, and the two leaky buckets that judge a
+capture's emission instants. What is not built is listed in
+[ROADMAP.md](ROADMAP.md).
 
 ## Development
 
