@@ -1,3 +1,10 @@
+# [0.6.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.5.0...v0.6.0) (2026-08-28)
+
+
+### Features
+
+* **redundancy:** reconstruct one flow from two ST 2022-7 legs ([5f6d296](https://github.com/Fuse-Technical-Group/pyst2110/commit/5f6d29608b1b21bf81adfd36d592dfd4d5f3a0be))
+
 # [0.5.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.4.0...v0.5.0) (2026-08-27)
 
 
