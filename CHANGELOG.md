@@ -1,3 +1,10 @@
+## [0.6.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.6.0...v0.6.1) (2026-08-28)
+
+
+### Performance Improvements
+
+* **payload:** leave the SRD walk when no packet continues ([1e3a5e5](https://github.com/Fuse-Technical-Group/pyst2110/commit/1e3a5e5438889fa4ce99c91f2d14541a65c8de81))
+
 # [0.6.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.5.0...v0.6.0) (2026-08-28)
 
 
