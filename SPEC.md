@@ -439,6 +439,44 @@ field pairing for an interlaced capture that opens mid-frame — pairing
 trusts the RFC 4175 F bit where the caller supplies it and arrival order
 where not.
 
+## ST 2022-7 redundancy §spec:redundancy
+
+*Status: in progress*
+
+ST 2022-7 sends one essence twice by two paths and lets the receiver take
+whichever copy of a packet arrives first. What that asks of this library is
+arithmetic over sequence numbers, not over pixels: which numbers the pair
+delivered between them, which each leg would have missed alone, which
+neither carried, and how far apart in time the two copies of one packet
+arrive.
+
+`pyst2110.redundancy.reconstruct` takes two legs — extended sequence numbers
+and arrival times — and answers all four. It reads no payload and holds no
+state, so a caller hands it whatever it has recorded.
+
+**The span both legs cover is what can be judged, and it is not the union.**
+Two recordings rarely start and stop on the same packet, so a leg whose
+capture ended earlier has a tail the other lacks; read as loss, that tail
+would dwarf everything real. The measurement is bounded to the sequence
+range present on both, and a pair sharing no range at all is refused rather
+than reported as total loss on both sides — two captures of different
+windows are not a redundant pair, and saying so beats returning a number.
+
+**Where a leg carries the same number twice, the earliest arrival is the
+one kept**, because that is the copy a receiver would have taken.
+
+**The path differential is only as good as the clocks the two legs were
+timed against.** Where the legs arrive on two ports of one adapter those are
+two hardware clocks, each disciplined separately, and the offset between
+them lands in the measurement. A skew smaller than that offset is not a
+reading of the network. The figure is reported signed and unqualified; what
+it may be compared against is the caller's to know.
+
+*Why the reconstruction and not the transport*: which packets arrived is a
+transport question and belongs to whatever moved them, but choosing between
+two copies means reading a sequence number, which the transport layer does
+not do (§spec:scope-boundary).
+
 ## Testing §spec:testing
 
 *Status: in progress*
