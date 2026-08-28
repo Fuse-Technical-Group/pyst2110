@@ -217,6 +217,24 @@ def test_packets_with_different_segment_counts_stay_associated():
     assert result.extended_sequence.tolist() == [1, 2, 3]
 
 
+def test_one_continuing_packet_keeps_the_whole_chunk_walking():
+    """The walk leaves its loop only when *no* packet continues.
+
+    The bound is over the chunk, so a single continuing packet among
+    single-segment ones still gets every segment it declared. Guards the
+    early exit: a test where all packets continue, or none do, passes
+    whether the bound is read per chunk or per packet.
+    """
+    # The continuing packet last, so an exit taken on the first packet's
+    # continuation bit rather than the chunk's would drop it.
+    result = parse(_ONE_SRD, _ONE_SRD, _THREE_SRDS)
+
+    assert result.segments.tolist() == [1, 1, 3]
+    assert result.packet.tolist() == [0, 1, 2, 2, 2]
+    assert result.line.tolist() == [42, 42, 0, 1, 2]
+    assert not result.overflowed.any()
+
+
 def test_extended_sequence_is_packet_aligned_not_segment_aligned():
     result = parse(_ONE_SRD, _THREE_SRDS)
     assert result.extended_sequence.shape == (2,)
