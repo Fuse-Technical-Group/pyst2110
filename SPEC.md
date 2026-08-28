@@ -502,6 +502,14 @@ NIC. Where a fixture is taken off the wire its provenance is recorded
 beside it — which sender, which format — because a capture whose origin is
 unknown proves nothing about conformance.
 
+They live in `tests/captures/` as compressed `.npz`, and the provenance
+travels **inside the file** rather than in a note beside it, so a fixture
+cannot be moved or copied away from its own history. A test asserts the
+provenance is there, which is what stops it being dropped when the arrays
+are regenerated. The window is a contiguous span rather than a sample:
+every packet in range is present as captured, because a decimated capture
+reads as loss and would prove the opposite of what it was taken for.
+
 ## Packaging §spec:packaging
 
 *Status: in progress*

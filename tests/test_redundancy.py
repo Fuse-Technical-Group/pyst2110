@@ -12,6 +12,10 @@ arrival times, and neither needs a NIC (§spec:testing).
 
 from __future__ import annotations
 
+import json
+import pathlib
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -106,3 +110,77 @@ def test_an_empty_leg_is_refused() -> None:
 def test_arrival_arrays_have_to_match_their_sequences() -> None:
     with pytest.raises(ValueError, match="same length"):
         reconstruct(np.arange(5), np.arange(4), *_leg(range(5)))
+
+
+# --- against a capture from real senders -------------------------------------
+#
+# The strongest evidence available without a NIC (§spec:testing). Provenance
+# travels inside the file, and `test_the_capture_says_where_it_came_from`
+# is what keeps it there.
+
+CAPTURE = pathlib.Path(__file__).parent / "captures" / "convertip-2022-7-outage.npz"
+
+
+@pytest.fixture(scope="module")
+def outage() -> dict[str, Any]:
+    with np.load(CAPTURE) as data:
+        return {name: data[name] for name in data.files}
+
+
+def test_the_capture_says_where_it_came_from(outage: dict[str, Any]) -> None:
+    """A capture whose origin is unknown proves nothing about conformance, so
+    the fixture carries its own provenance and this fails if it is dropped."""
+    recorded = json.loads(str(outage["provenance"]))
+    for field in ("sender", "format", "leg_a", "leg_b", "receiver", "outage"):
+        assert recorded[field]
+
+
+def test_a_real_leg_outage_is_recovered_from_the_other_leg(
+    outage: dict[str, Any],
+) -> None:
+    """A Matrox ConvertIP sending both legs, one of them taken off the air for
+    about 66 ms mid-capture. Leg B is missing what the outage cost it; the
+    pair delivers the span whole, which is what the standard is for."""
+    r = reconstruct(
+        outage["a_sequence"],
+        outage["a_arrival"],
+        outage["b_sequence"],
+        outage["b_arrival"],
+    )
+    span = r.span[1] - r.span[0] + 1
+    assert r.lost == 0  # nothing the pair could not mend
+    assert r.delivered == span  # and it delivered the whole span
+    assert r.recovered_b == 1746  # what leg B alone would have lost
+    assert r.recovered_a == 0  # leg A never dropped anything
+
+
+def test_the_unpaired_packets_are_exactly_the_outage(
+    outage: dict[str, Any],
+) -> None:
+    """The packets carried by one leg only are the gap and nothing else: an
+    off-by-one in the span would show up here as a handful more."""
+    r = reconstruct(
+        outage["a_sequence"],
+        outage["a_arrival"],
+        outage["b_sequence"],
+        outage["b_arrival"],
+    )
+    span = r.span[1] - r.span[0] + 1
+    assert r.paired + r.recovered_b == span
+
+
+def test_the_measured_differential_is_inside_the_clocks_resolution(
+    outage: dict[str, Any],
+) -> None:
+    """Both legs were timed against two hardware clocks disciplined
+    separately, so the differential is bounded by their alignment rather than
+    resolved by it (§spec:redundancy). A microsecond would mean something
+    changed about how the legs are timed."""
+    r = reconstruct(
+        outage["a_sequence"],
+        outage["a_arrival"],
+        outage["b_sequence"],
+        outage["b_arrival"],
+    )
+    assert abs(r.skew_min_ns) < 1_000
+    assert abs(r.skew_max_ns) < 1_000
