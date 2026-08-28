@@ -20,9 +20,6 @@ one consumer's use behind it.
   parsing are what would move.
 - **st-2110-30-and-40**: audio and ancillary data. Different payload
   headers, same RTP and the same array-shaped interface.
-- **st-2022-7**: reconstructing one stream from two redundant legs by
-  sequence number. Needs a consumer carrying two flows before its
-  interface can be designed against anything real.
 - **key-and-float-formats**: two formats ST 2110-20 permits and
   `src/pyst2110/geometry.py` refuses. `sampling=KEY` has a pgroup table of
   its own (Table 4: one octet per pixel at 8 bits, five per four at 10,
