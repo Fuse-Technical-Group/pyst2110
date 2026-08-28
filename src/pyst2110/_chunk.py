@@ -83,6 +83,7 @@ def read_u16(
     packets: NDArray[np.uint8],
     offsets: NDArray[np.int64],
     bounds: NDArray[np.int64],
+    rows: NDArray[np.int64] | None = None,
 ) -> tuple[NDArray[np.int64], NDArray[np.bool_]]:
     """A big-endian 16-bit field read at a per-packet offset.
 
@@ -90,10 +91,18 @@ def read_u16(
     A read that does not fit is clamped to a valid index and its value zeroed
     rather than raising: one malformed packet in a chunk of thousands is a
     packet to account for, not a reason to drop the chunk.
+
+    ``rows`` is the packet index the gather reads down, ``arange(count)``
+    where a caller does not pass one. A caller reading several fields of the
+    same chunk passes it once rather than paying an allocation per field:
+    :func:`pyst2110.payload.parse_payload_headers` reads nine, and at a
+    thousand chunks a second that is nine arange allocations per chunk on the
+    frame path.
     """
     inside = (offsets >= 0) & (offsets + _U16_SIZE <= bounds)
     index = np.where(inside, offsets, 0).clip(0, packets.shape[1] - _U16_SIZE)
-    rows = np.arange(packets.shape[0])
+    if rows is None:
+        rows = np.arange(packets.shape[0])
     high = packets[rows, index].astype(np.int64)
     low = packets[rows, index + 1].astype(np.int64)
     return np.where(inside, (high << 8) | low, 0).astype(np.int64), inside

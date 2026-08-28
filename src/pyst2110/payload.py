@@ -134,7 +134,11 @@ def parse_payload_headers(
     )
     bounds = _chunk.limits(packets, sizes)
 
-    sequence, readable = _chunk.read_u16(packets, starts, bounds)
+    # One row index for all nine reads below rather than one apiece: the
+    # gather gets the same column vector every time, and allocating it per
+    # field is pure overhead on a path that runs a thousand chunks a second.
+    rows_index = np.arange(count, dtype=np.int64)
+    sequence, readable = _chunk.read_u16(packets, starts, bounds, rows_index)
     shape = (count, max_segments)
     length = np.zeros(shape, dtype=np.int64)
     line = np.zeros(shape, dtype=np.int64)
@@ -147,9 +151,15 @@ def parse_payload_headers(
     active = readable
     base = starts + _layout.EXTENDED_SEQUENCE_SIZE
     for segment in range(max_segments):
-        raw_length, _ = _chunk.read_u16(packets, base + _layout.SRD_LENGTH, bounds)
-        raw_row, _ = _chunk.read_u16(packets, base + _layout.SRD_ROW, bounds)
-        raw_offset, fits = _chunk.read_u16(packets, base + _layout.SRD_OFFSET, bounds)
+        raw_length, _ = _chunk.read_u16(
+            packets, base + _layout.SRD_LENGTH, bounds, rows_index
+        )
+        raw_row, _ = _chunk.read_u16(
+            packets, base + _layout.SRD_ROW, bounds, rows_index
+        )
+        raw_offset, fits = _chunk.read_u16(
+            packets, base + _layout.SRD_OFFSET, bounds, rows_index
+        )
         # An SRD header is one six-octet unit, so its last field landing
         # inside the packet is the whole of it landing inside.
         read = active & fits
@@ -162,6 +172,17 @@ def parse_payload_headers(
 
         active = read & ((raw_offset & _layout.FLAG_MASK) != 0)
         base = base + _layout.SRD_SIZE
+        # Nothing continues, so every later segment would read `active` false
+        # and write the zeros its column already holds. Leaving the loop is
+        # therefore the same parse, not a shortened one — and it is the
+        # ordinary case: a 2110-20 packet at the standard datagram size
+        # carries one SRD, so the walk otherwise reads two segments that are
+        # not there, for two thirds of its gathers. This is a bound on work,
+        # never on how far the walk may reach: a packet that does continue
+        # still gets `max_segments`, and one still continuing at the bound is
+        # `overflowed` below exactly as before.
+        if not active.any():
+            break
 
     parsed = present.sum(axis=1).astype(np.int64)
     data_offset = starts + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE * parsed
