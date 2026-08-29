@@ -24,6 +24,8 @@ from pyst2110.geometry import rows_per_field as rows_per_field
 from pyst2110.geometry import sample_offset as sample_offset
 from pyst2110.payload import PayloadHeaders as PayloadHeaders
 from pyst2110.payload import parse_payload_headers as parse_payload_headers
+from pyst2110.redundancy import LegPair as LegPair
+from pyst2110.redundancy import reconstruct as reconstruct
 from pyst2110.rtp import FIXED_HEADER_SIZE as FIXED_HEADER_SIZE
 from pyst2110.rtp import RtpHeaders as RtpHeaders
 from pyst2110.rtp import parse_rtp as parse_rtp
@@ -68,6 +70,7 @@ __all__ = [
     "UDP_HEADER_SIZE",
     "FrameHeaders",
     "FrameTracker",
+    "LegPair",
     "Limits",
     "Measurement",
     "PayloadHeaders",
@@ -99,6 +102,7 @@ __all__ = [
     "raster_offset",
     "read_schedule",
     "read_times",
+    "reconstruct",
     "rows_per_field",
     "sample_offset",
     "sender_limits",
