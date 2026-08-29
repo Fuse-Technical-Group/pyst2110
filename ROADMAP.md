@@ -13,6 +13,29 @@ version rather than a git ref — the split is real once the dependency is
 a version, and nothing is served by publishing before the surface has
 one consumer's use behind it.
 
+## Key signals §road:key-signals
+
+### Key pgroup geometry §road:key-geometry
+
+Add ST 2110-20 Table 4 to the sampling-to-pgroup map in
+`src/pyst2110/geometry.py`, so line length, payload sizing, packet counts,
+placement and `FrameHeaders` all carry a `sampling=KEY` flow
+(§spec:key-signals).
+
+### Key offer constraints §road:key-offer
+
+Refuse a mismatched key offer in `src/pyst2110/sdp.py` on both paths — a
+`sampling=KEY` flow declaring any colorimetry but `ALPHA`, and an `ALPHA`
+colorimetry on any other sampling (§spec:key-signals). Depends on
+§road:key-geometry.
+
+**Verify:** A 1920x1080 10-bit `KEY` flow at 60 fps reports a `(5, 4)`
+pgroup, a chosen payload of 1200 octets, two packets a line and 2160 a
+frame, and `FrameHeaders` builds and stamps that block. Its emitted offer
+carries `sampling=KEY`, `colorimetry=ALPHA` and `SSN=ST2110-20:2022`, and
+no TCS. The same format declaring `colorimetry=BT709` is refused naming
+the parameter.
+
 ## Future §road:future
 
 - **ipmx**: IPMX is ST 2110 with a different SDP profile and variable
@@ -20,14 +43,11 @@ one consumer's use behind it.
   parsing are what would move.
 - **st-2110-30-and-40**: audio and ancillary data. Different payload
   headers, same RTP and the same array-shaped interface.
-- **key-and-float-formats**: two formats ST 2110-20 permits and
-  `src/pyst2110/geometry.py` refuses. `sampling=KEY` has a pgroup table of
-  its own (Table 4: one octet per pixel at 8 bits, five per four at 10,
-  three per two at 12, two per pixel at 16 and 16f). `depth=16f` is
-  half-float, section 7.4.2, sharing 16-bit's pgroup — and
-  `src/pyst2110/sdp.py` refuses it twice over, in `int()` on the way in and
-  against the depths it permits on the way out, so it needs a depth that is
-  not an integer as much as a table entry.
+- **float-formats**: `depth=16f` is half-float, section 7.4.2, sharing
+  16-bit's pgroup — and `src/pyst2110/sdp.py` refuses it twice over, in
+  `int()` on the way in and against the depths it permits on the way out,
+  so it needs a depth that is not an integer as much as a table entry.
+  `sampling=KEY` left this bullet for §road:key-signals.
 - **sdp-clock-attributes**: the one known ST 2110-10 non-conformance in
   the emitted offer. Section 8.2 — "All stream descriptions shall have a
   `ts-refclk` attribute" — and section 8.3 — "All stream descriptions
