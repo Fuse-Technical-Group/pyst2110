@@ -224,6 +224,61 @@ split both call it rather than each halving for themselves.
 sample rows, so a line is not a whole number of them and none of the
 arithmetic above holds.
 
+Single-component key signals read their pgroups from a table of their own
+and are otherwise this section's arithmetic unchanged (§spec:key-signals).
+
+## Key signals §spec:key-signals
+
+*Status: not started*
+
+A key signal — the alpha, matte or coverage channel accompanying a fill —
+is an ST 2110-20 flow carrying one component where a fill carries three.
+The library builds and reads it on the path every other sampling takes:
+`sampling=KEY` has a pgroup, so line length, payload sizing, packet
+counts, placement and header building all follow from §spec:geometry with
+no second code path.
+
+ST 2110-20 section 6.2.6 Table 4 gives the pgroups — one octet a pixel at
+8 bits, five octets to four pixels at 10, three to two at 12, two to one
+at 16. The 10-bit entry is the 4:4:4 table's divided by three, which is
+what one component of the same depth costs: the bit packing is unchanged
+and only the component count moves.
+
+**A key flow's offer is constrained beyond its sampling.** Section 7.4.1
+requires `colorimetry=ALPHA` and forbids a TCS value, and section 7.6
+makes a TCS meaningless wherever the sampling is KEY. ALPHA is a 2022
+value, so the offer carries `SSN=ST2110-20:2022` rather than the 2017
+default — which §spec:sdp already derives from the colorimetry token. A
+key offer is therefore written correctly today and the geometry alone
+refuses it.
+
+*Why the geometry rather than a key-shaped entry point*: a key flow
+differs from a fill flow in one number, the octets a pgroup covers.
+Everything a caller does with it — size a payload, count packets, place a
+descriptor, stamp a header — is arithmetic already written, and a second
+surface would be that arithmetic again under another name.
+
+**A fill and its key are two flows, and this library does not pair them.**
+The association belongs to the consumer: ST 2110-20 says only that key
+signals "are used in relationship to fill signals" and defines no
+grouping, and what groups them on a real fabric is NMOS IS-04 and IS-05,
+a layer above this one (§spec:scope-boundary). It is not the
+`a=group:DUP` of §spec:redundancy — that names one essence sent twice for
+path diversity, where a fill and a key are two essences whose payloads
+differ. A caller driving both from one frame index reads identical RTP
+timestamps out of §spec:transmit-headers, both flows carrying one rate,
+and that is the alignment a receiver has to work from.
+
+`depth=16f` stays out. Table 4 gives it the same two-octet pgroup as 16,
+but a half-float depth is not an integer and §spec:sdp parses and bounds
+depths as integers on both paths — so admitting it is a depth model
+rather than a table entry (§road:future).
+
+The signal's own definition — what a key sample means and how it relates
+to the fill's — is SMPTE RP 157, and none of it is carried here. This
+library computes where a key sample sits, as it does for every other
+sampling, and interprets none (§req:constraints).
+
 ## SDP §spec:sdp
 
 *Status: complete*
