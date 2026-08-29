@@ -185,15 +185,15 @@ raster rather than raising.
 
 ## The conforming fast path §spec:conforming-fast-path
 
-*Status: not started*
+*Status: complete*
 
 Vectorized is not the same as fast, and the difference here is a factor of
-forty. Every parse runs over a whole chunk (§spec:interface-shape), which is
+twelve. Every parse runs over a whole chunk (§spec:interface-shape), which is
 what §req:priorities asks for and what rules out a per-packet Python object.
 What it does not rule out is a vectorized expression costing far more than the
-data it reads: a chunk's header block at 4096 packets is 80 KiB, and the parse
-takes 1.16 ms over it — about 70 MB/s, three orders below what numpy does with
-80 KiB resident in cache.
+data it reads: a chunk's header block at 4096 packets is 80 KiB, and the
+general parse takes 1.48 ms over it — about 55 MB/s, three orders below what
+numpy does with 80 KiB resident in cache.
 
 **Where the time goes.** The payload offset is per packet, because a CSRC list
 or an RTP header extension moves where the payload begins (§spec:rtp). Reading
@@ -211,16 +211,22 @@ The parse therefore takes one of two paths, chosen from the chunk itself:
 - The **fast path**, where the chunk carries no CSRC list, no extension bit
   and no continuation flag. Fields are read at their fixed offsets and stay in
   their own width — a sixteen-bit field is a sixteen-bit array, promoted only
-  where a caller's arithmetic needs it.
+  where a caller's arithmetic needs it. Line, sample offset and SRD length are
+  therefore reported as sixteen bits on both paths; byte offsets and the
+  extended sequence number stay wide, being what a gather indexes with and
+  what scales into a raster.
 - The **general path**, unchanged, for every other chunk: a packet carrying a
   CSRC list, an RTP extension, or more than one segment.
 
-*The choice is read, never promised.* Three vector tests over the chunk decide
-it — the flags byte's CSRC count and extension bit, and the first segment's
-continuation flag — costing about a nanosecond a packet against the hundreds
-they save. A caller cannot assert conformance and an SDP cannot declare it: a
-sender that changes its packetization mid-flow changes the path at the next
-chunk, and nothing outside the bytes is consulted.
+*The choice is read, never promised.* A comparison over the flags octet and one
+over the first segment's continuation flag decide it, costing about a
+nanosecond a packet against the hundreds they save. A caller cannot assert
+conformance and an SDP cannot declare it: a sender that changes its
+packetization mid-flow changes the path at the next chunk, and nothing outside
+the bytes is consulted. Two shapes fall back for a reason that is not the
+sender's — an odd stride and a sub-block sliced out of a wider buffer are both
+legitimate chunks that no column slice can read — and they take the general
+path rather than raising.
 
 *Why not the fast path alone*: a CSRC list, an RTP extension and a multi-SRD
 packet are all legal. A library that parsed only the shape it prefers would
@@ -228,17 +234,53 @@ report a line that does not exist rather than a packet it could not read,
 which is the failure §spec:payload-header exists to avoid.
 
 **The two paths agree field for field.** That is a gate rather than a claim:
-the suite parses the same packets both ways and compares every array —
-sequence, marker, extended sequence, segment count, and each segment's length,
-line and offset — over hand-written vectors and over the captures taken off
-real senders alike (§spec:testing). The general path is the reference; where
-the two disagree, the fast path is what is wrong.
+the suite parses the same packets both ways and compares every array — values,
+shapes and widths — over hand-written vectors and over a chunk carrying a real
+sender's captured sequence stream, outage included (§spec:testing). The
+general path is the reference; where the two disagree, the fast path is what
+is wrong. The conforming cases assert the columns really read them, so two
+general parses cannot pass the gate by agreeing with each other.
 
-**Measured** on a 4096-packet chunk of conforming one-SRD packets: 282.3 ns a
-packet against 7.1. At 2160p60 and MAXUDP 1460 — 17,280 packets a frame —
-that is 4.88 ms of a 16.68 ms frame period against 0.12 ms. The consumer that
-found it was spending 9.35 ms of that period inside this library and losing
-about a third of the wire to the shortfall.
+**What it costs, and what pays for it.** Measured on a 4096-packet chunk of
+conforming one-SRD headers, and reproducible with `tools/parse-benchmark.py`
+rather than taken on trust:
+
+| entry point | general | fast |
+| --- | --- | --- |
+| `parse_rtp` | 60.2 ns a packet | 15.1 |
+| `parse_payload_headers` | 279.7 | 14.0 |
+| both | 360.8 | 29.9 |
+
+At 2160p60 and MAXUDP 1460 — 17,280 packets a frame — that is 6.23 ms of a
+16.68 ms frame period against 0.52. The consumer that found it was spending
+9.35 ms of that period inside this library and losing about a third of the
+wire to the shortfall.
+
+The same reading applies to `SequenceTracker.observe`, on the same per-chunk
+path and holding no wire format at all: both sequence spaces are powers of
+two, so the modulo that takes a step forward is exactly a mask, and the
+predecessor a straddling step needs is one scalar rather than grounds for
+copying the chunk. 0.34 ms a frame to 0.20.
+
+**Buffer policy: the scratch is the parse's, the returns are the caller's.**
+The cyclic collector is not on this path — numpy arrays are freed by refcount
+and this code makes no cycles, so freezing or disabling the collector buys
+nothing, and saying otherwise would be wrong. What costs is *allocation*:
+malloc, first-touch page faults and the free, for every temporary above
+numpy's small-array cache, which a 4096-element array is well past. So an
+operation writes through `out=` wherever a destination already exists, and a
+flag is read by one comparison rather than by a mask and a test.
+`src/pyst2110/transmit.py` holds its scratch across calls because it is an
+object with a lifetime; the parses are free functions holding no state by
+design (§spec:payload-header), so what they eliminate is temporaries within a
+call, not allocation across calls. A parse that owned scratch would be a new
+object, not a change to these.
+
+The arrays a parse *returns* are freshly allocated and owned by the caller.
+Borrowing them back would be a contract change — §req:users names
+capture-analysis scripts as first-class callers, and they hold arrays across
+calls — so it needs its own audit rather than a performance pass's side
+effect.
 
 *Why this rather than a compiled extension*: §spec:packaging trades a C
 extension away for portability, against "a speed nothing has yet asked for".
