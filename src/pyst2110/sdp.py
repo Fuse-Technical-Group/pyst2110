@@ -280,6 +280,20 @@ def parse_dup_sdp(text: str) -> tuple[SdpFlow, SdpFlow]:
             )
         legs.append(_flow(blocks[tag], tag))
     first, second = legs
+
+    # The reader refuses what the writer refuses. Two blocks that name one
+    # socket are one path described twice, and a receiver provisioned from
+    # them joins the same group twice while its operator is told the essence
+    # is protected — so disrupting the one path blacks it. Whole-flow
+    # equality is the test rather than the address alone, because two legs
+    # onto one group from different senders are a source-specific pair and
+    # genuinely two paths (§spec:redundancy).
+    if first == second:
+        raise ValueError(
+            f"both of the SDP's legs name {first.destination_ip} port "
+            f"{first.destination_port} and the same sender, which is one path "
+            f"described twice rather than the two ST 2022-7 protects with"
+        )
     return first, second
 
 

@@ -910,6 +910,36 @@ def test_two_media_blocks_carrying_one_tag_are_refused():
         parse_dup_sdp(text)
 
 
+def test_two_distinct_blocks_naming_one_socket_are_refused():
+    """The two cases above catch a document that names one block twice; this
+    is the one where both blocks are real and describe the same socket. The
+    writer already refuses it, and the reader is the side facing a document
+    it did not write: a receiver provisioned from such a pair joins one group
+    twice while its operator is told the essence is protected."""
+    text = _RFC_7104_DUP.replace(
+        "c=IN IP4 233.252.0.2/127", "c=IN IP4 233.252.0.1/127"
+    ).replace(
+        "a=source-filter:incl IN IP4 233.252.0.2 198.51.100.1",
+        "a=source-filter:incl IN IP4 233.252.0.1 198.51.100.1",
+    )
+    with pytest.raises(ValueError, match="one path described twice"):
+        parse_dup_sdp(text)
+
+
+def test_two_legs_onto_one_group_from_different_senders_are_a_pair():
+    """Whole-flow equality is the test, not the address: source-specific
+    multicast puts two paths onto one group, and that is a real pair."""
+    text = _RFC_7104_DUP.replace(
+        "c=IN IP4 233.252.0.2/127", "c=IN IP4 233.252.0.1/127"
+    ).replace(
+        "a=source-filter:incl IN IP4 233.252.0.2 198.51.100.1",
+        "a=source-filter:incl IN IP4 233.252.0.1 198.51.100.2",
+    )
+    first, second = parse_dup_sdp(text)
+    assert first.destination_ip == second.destination_ip
+    assert (first.source_ip, second.source_ip) == ("198.51.100.1", "198.51.100.2")
+
+
 def test_more_legs_than_a_pair_are_refused():
     """A pair is what this library models — pyst2110.redundancy reconstructs
     two legs — and what Rivermax carries, RMX_MAX_DUP_STREAMS being two. A
