@@ -23,9 +23,12 @@ vendor SDK to find out what one says.
 1. **Correct against the published standards.** RFC 3550, RFC 4175 and
    SMPTE ST 2110-20 decide the layouts. Where a reading is ambiguous the
    specification records which one this library takes and why.
-2. **Fast enough for the frame budget.** A 4K60 flow approaches 250,000
-   packets a second. Per-packet Python is not an option, so every parse
-   is vectorized over a whole chunk of packets at once.
+2. **Fast enough for the frame budget.** A 4K60 flow is 259,000 packets a
+   second at a jumbo datagram and 1,036,830 at the standard one, which is
+   the size a conforming fabric carries. Per-packet Python is not an
+   option, so every parse is vectorized over a whole chunk at once — and
+   vectorized is a floor rather than the answer, because a chunk-wide
+   expression can still cost more than the bytes it reads.
 3. **Runnable with no hardware.** A NIC, a licence and a vendor SDK are
    all absent from CI, so nothing here may need them.
 4. **Reusable beyond one transport.** A capture file and a socket are as
