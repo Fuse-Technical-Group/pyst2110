@@ -441,18 +441,18 @@ where not.
 
 ## ST 2022-7 redundancy §spec:redundancy
 
-*Status: in progress*
+*Status: complete*
 
 ST 2022-7 sends one essence twice by two paths and lets the receiver take
 whichever copy of a packet arrives first. What that asks of this library is
-arithmetic over sequence numbers, not over pixels: which numbers the pair
-delivered between them, which each leg would have missed alone, which
-neither carried, and how far apart in time the two copies of one packet
-arrive.
+arithmetic over sequence numbers rather than over pixels, and the document
+that describes a pair.
 
 `pyst2110.redundancy.reconstruct` takes two legs — extended sequence numbers
-and arrival times — and answers all four. It reads no payload and holds no
-state, so a caller hands it whatever it has recorded.
+and arrival times — and reports which numbers the pair delivered between
+them, which each leg would have missed alone, which neither carried, and how
+far apart in time the two copies of one packet arrive. It reads no payload
+and holds no state, so a caller hands it whatever it has recorded.
 
 **The span both legs cover is what can be judged, and it is not the union.**
 Two recordings rarely start and stop on the same packet, so a leg whose
@@ -474,24 +474,40 @@ it may be compared against is the caller's to know.
 
 **A redundant pair is one offer, not two.** RFC 7104 groups the legs with
 a session-level `a=group:DUP` naming the `a=mid:` tags of two `m=video`
-blocks, and each block carries its own `c=` and `a=source-filter`. The
-parse returns the legs in the order the group names them, which is the
-order that decides which leg is which everywhere downstream; a document
-whose `DUP` tags do not match its media blocks is refused rather than
-read as a single-leg offer with an oddity, because a sender that emitted
-one leg where two were meant sends unprotected essence and reports
-success.
+blocks, and each block carries its own `c=` and `a=source-filter`.
+`parse_dup_sdp` reads that document and `format_dup_sdp` writes it. The
+legs come back in the order the group names them, which is the order that
+decides which leg is which everywhere downstream; a document whose `DUP`
+tags do not match its media blocks is refused rather than read as a
+single-leg offer with an oddity, because a sender that emitted one leg
+where two were meant sends unprotected essence and reports success.
+
+A pair is two legs and no more: two is what the reconstruction takes and
+what Rivermax carries, `RMX_MAX_DUP_STREAMS` being two, so a group naming
+three describes a document nothing downstream can take.
 
 An offer this library writes should be one a transmit SDK accepts
 unchanged. Rivermax's `rmx_output_media_set_sdp` requires that the count
 of `DUP` tags correspond to the count of `m=video` blocks, which is the
-same rule stated from the other side.
+same rule stated from the other side. The writer refuses that failure in
+its own direction: two legs naming one destination, port and sender are one
+path written twice, and an offer saying otherwise claims a protection the
+sender has not got.
 
-**A single-leg offer stays a single-leg offer.** The existing parse
-returns one flow and keeps returning one; nothing about `a=group:DUP`
-changes what a document without it means. This matters because the
-port field already tolerates `20000/2` — a count RFC 4566 permits and
-that is not what makes an offer redundant.
+**A single-leg offer stays a single-leg offer.** `parse_sdp` returns one
+flow and keeps returning one; nothing about `a=group:DUP` changes what a
+document without it means. This matters because the port field already
+tolerates `20000/2` — a count RFC 4566 permits and that is not what makes
+an offer redundant. Handed a document that does carry the group, `parse_sdp`
+refuses rather than answer with whichever block came first: a consumer
+reading a destination out of a two-leg offer that way joins, or sends, one
+leg of two and reports success, which is the failure above reached by the
+other road.
+
+*Why a second parse rather than a wider one*: a caller holding one flow
+today should not have to change to keep holding one, and the two documents
+are not the same shape — resolving tags against blocks and returning the
+legs in the group's order has nowhere to go in a single-flow return.
 
 *Why the reconstruction and not the transport*: which packets arrived is a
 transport question and belongs to whatever moved them, but choosing between
