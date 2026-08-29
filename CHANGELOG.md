@@ -1,3 +1,10 @@
+## [0.7.2](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.7.1...v0.7.2) (2026-08-29)
+
+
+### Performance Improvements
+
+* read a thirty-two-bit field as one column, and a gapless chunk in closed form ([30bdd43](https://github.com/Fuse-Technical-Group/pyst2110/commit/30bdd4306af84f8e016e006c707b1b47531d6acd))
+
 ## [0.7.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.7.0...v0.7.1) (2026-08-29)
 
 
