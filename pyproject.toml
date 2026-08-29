@@ -1,10 +1,16 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "pyst2110"
-version = "0.0.0"
+# Derived from the git tag, never authored here. A static version is one a
+# release has to remember to rewrite, and this one's releases did not: every
+# tag from v0.4.0 to v0.7.1 shipped `0.0.0`, so `importlib.metadata.version`
+# told a consumer nothing about which parse it had loaded — which is what
+# `bm.nodes._st2110_backend.loaded_pyst2110` had to work around by reading a
+# capability instead. See [tool.hatch.version].
+dynamic = ["version"]
 description = "SMPTE ST 2110 protocol: RTP and RFC 4175 headers, geometry, SDP"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -42,6 +48,9 @@ packages = ["src/pyst2110"]
 # No markers and no deselection: nothing here needs a NIC, a licence or an
 # SDK, so the default selection is the whole suite (SPEC §spec:testing).
 testpaths = ["tests"]
+
+[tool.hatch.version]
+source = "vcs"
 
 [tool.ruff]
 target-version = "py312"
