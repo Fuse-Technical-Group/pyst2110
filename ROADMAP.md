@@ -3,6 +3,30 @@
 Derived from [SPEC.md](SPEC.md). Sections are in build-dependency order.
 Completed work is removed; presence here means the work is not done.
 
+## ST 2022-7 redundancy §road:redundancy
+
+The reconstruction is delivered (§spec:redundancy). What remains is the
+document that describes a redundant pair, which a sender needs before it
+can send one.
+
+### A duplicated offer §road:dup-sdp
+
+Deliver the `a=group:DUP` half of §spec:redundancy, both ways: parse a
+session-level group and its `a=mid:` tags against two `m=video` blocks
+into two flows, and emit one. `parse_sdp` returns a single flow today
+(`src/pyst2110/sdp.py`), and `format_sdp` writes a single media block.
+
+The consumer is `Fuse-Technical-Group/packet-engine`'s two-leg transmit
+path, which reads a flow's destination out of the SDP and so cannot
+describe two legs until this can. Refuse a
+document whose `DUP` tags and media blocks disagree — a sender that
+emitted one leg where two were meant sends unprotected essence and
+reports success.
+
+**Verify:** A DUP offer this library writes round-trips through its own
+parse to the same two flows, and both are tested against a hand-written
+document from RFC 7104's own example rather than against the writer.
+
 ## Publication §road:publish
 
 ### PyPI release §road:pypi

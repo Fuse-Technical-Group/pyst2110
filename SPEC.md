@@ -472,6 +472,27 @@ them lands in the measurement. A skew smaller than that offset is not a
 reading of the network. The figure is reported signed and unqualified; what
 it may be compared against is the caller's to know.
 
+**A redundant pair is one offer, not two.** RFC 7104 groups the legs with
+a session-level `a=group:DUP` naming the `a=mid:` tags of two `m=video`
+blocks, and each block carries its own `c=` and `a=source-filter`. The
+parse returns the legs in the order the group names them, which is the
+order that decides which leg is which everywhere downstream; a document
+whose `DUP` tags do not match its media blocks is refused rather than
+read as a single-leg offer with an oddity, because a sender that emitted
+one leg where two were meant sends unprotected essence and reports
+success.
+
+An offer this library writes should be one a transmit SDK accepts
+unchanged. Rivermax's `rmx_output_media_set_sdp` requires that the count
+of `DUP` tags correspond to the count of `m=video` blocks, which is the
+same rule stated from the other side.
+
+**A single-leg offer stays a single-leg offer.** The existing parse
+returns one flow and keeps returning one; nothing about `a=group:DUP`
+changes what a document without it means. This matters because the
+port field already tolerates `20000/2` — a count RFC 4566 permits and
+that is not what makes an offer redundant.
+
 *Why the reconstruction and not the transport*: which packets arrived is a
 transport question and belongs to whatever moved them, but choosing between
 two copies means reading a sequence number, which the transport layer does
