@@ -33,6 +33,15 @@ _CSRC_SIZE = 4
 _EXTENSION_HEADER_SIZE = 4
 _EXTENSION_WORD_SIZE = 4
 
+# Where the fixed header's fields sit in a big-endian 16-bit view of the
+# chunk. The two wide ones take a word each side, high half first.
+_SEQUENCE_WORD = _layout.SEQUENCE // 2
+_TIMESTAMP_WORD = _layout.TIMESTAMP // 2
+_SSRC_WORD = _layout.SSRC // 2
+_HALF_WORD_SHIFT = 16
+# In the field's own width, so masking one does not widen it back again.
+_PAYLOAD_TYPE_MASK = np.uint8(_layout.PAYLOAD_TYPE_MASK)
+
 
 @dataclass(frozen=True)
 class RtpHeaders:
@@ -75,10 +84,78 @@ def parse_rtp(
     ``sizes`` gives each packet's true length; without it the stride is
     assumed, which is right for a capture and wrong for a ring whose entries
     are wider than its packets (§spec:interface-shape).
+
+    Which of the two parses runs is read from the chunk and never promised by
+    a caller (§spec:conforming-fast-path); the arrays returned are the same
+    either way.
     """
     _chunk.validate(packets, FIXED_HEADER_SIZE)
     bounds = _chunk.limits(packets, sizes)
+    conforming = _conforming(packets, bounds)
+    return conforming if conforming is not None else _general(packets, bounds)
 
+
+def _conforming(
+    packets: NDArray[np.uint8], bounds: NDArray[np.int64]
+) -> RtpHeaders | None:
+    """The chunk read as columns, or ``None`` where it is not that shape.
+
+    One comparison over the flags octet decides it. A conforming ST 2110-20
+    sender emits exactly :data:`pyst2110._layout.VERSION_2` there — version
+    two, no padding, no extension, no CSRC list — so the single pass settles
+    four fields as well as the payload offset, and each of them is a constant
+    the length of the chunk rather than an array read off the wire. Anything
+    else, padding included, is the general path's (§spec:conforming-fast-path).
+
+    The payload offset follows from the same octet: with no CSRC list and no
+    extension every payload begins at the fixed header's end, which is the
+    per-packet gather this path exists to avoid.
+    """
+    count = packets.shape[0]
+    if count == 0 or bounds.min() < FIXED_HEADER_SIZE:
+        return None
+    words = _chunk.u16_view(packets)
+    if words is None or (packets[:, 0] != _layout.VERSION_2).any():
+        return None
+
+    # The marker tops its octet and the field flags top their words, so a
+    # comparison against the flag reads the bit in one pass where a mask and
+    # a test against zero take two, and allocate twice.
+    types = packets[:, 1]
+    return RtpHeaders(
+        version=np.full(count, _layout.RTP_VERSION, dtype=np.uint8),
+        padding=np.zeros(count, dtype=np.bool_),
+        extension=np.zeros(count, dtype=np.bool_),
+        csrc_count=np.zeros(count, dtype=np.uint8),
+        marker=(types >= _layout.MARKER_MASK),
+        payload_type=(types & _PAYLOAD_TYPE_MASK),
+        sequence=words[:, _SEQUENCE_WORD].astype(np.uint16),
+        timestamp=_joined_u32(words, _TIMESTAMP_WORD),
+        ssrc=_joined_u32(words, _SSRC_WORD),
+        payload_offset=np.full(count, FIXED_HEADER_SIZE, dtype=np.int64),
+    )
+
+
+def _joined_u32(words: NDArray[np.uint16], high: int) -> NDArray[np.uint32]:
+    """A 32-bit field as its two 16-bit columns, joined in place.
+
+    Copying the four octets out to read them as one word touches twice the
+    memory a column slice does and costs about twice as long, the columns
+    being what a strided copy has to walk anyway. Widening the high half and
+    folding the low one into it allocates once for the result and no more.
+    """
+    value: NDArray[np.uint32] = words[:, high].astype(np.uint32)
+    value <<= _HALF_WORD_SHIFT
+    value |= words[:, high + 1]
+    return value
+
+
+def _general(packets: NDArray[np.uint8], bounds: NDArray[np.int64]) -> RtpHeaders:
+    """The reference parse: every field read wherever this packet put it.
+
+    Unchanged by the fast path beside it, and the authority where the two
+    disagree (§spec:conforming-fast-path).
+    """
     # The fixed header is one twelve-octet unit, so a packet reporting less
     # carries none of it and every field below reads zero instead of whatever
     # the buffer held there before.

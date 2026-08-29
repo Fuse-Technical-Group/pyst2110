@@ -11,7 +11,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from conftest import chunk
+from conftest import GeneralPathError, chunk, watch_paths
+from pyst2110 import rtp
 from pyst2110.rtp import FIXED_HEADER_SIZE, parse_rtp
 
 # RFC 3550 §5.1. Version 2, no padding, no extension, no CSRCs; marker set;
@@ -293,3 +294,99 @@ def test_a_version_other_than_two_is_reported_not_corrected():
     packet = list(_PLAIN)
     packet[0] = 0x40  # V=1
     assert parse_rtp(chunk(packet)).version.tolist() == [1]
+
+
+# --- which path the chunk chooses (SPEC §spec:conforming-fast-path) ----------
+#
+# The two parses agree field for field — `test_path_equality.py` is the gate on
+# that — so nothing in the *result* says which one ran. These pin the choice
+# itself: a call that returns took the fast path, one that raises
+# `GeneralPathError` took the general one.
+
+
+def test_a_conforming_chunk_is_read_by_column(monkeypatch):
+    """No CSRC list, no extension, a whole fixed header in every packet."""
+    watch_paths(monkeypatch, rtp)
+    headers = parse_rtp(chunk(_PLAIN, _NO_MARKER))
+
+    assert headers.sequence.tolist() == [0x1234, 0xFFFF]
+    assert headers.marker.tolist() == [True, False]
+    assert headers.payload_offset.tolist() == [12, 12]
+
+
+def test_a_csrc_list_takes_the_general_path(monkeypatch):
+    """The payload offset stops being a constant, which is the whole reason
+    the general path exists."""
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(chunk(_TWO_CSRCS))
+
+
+def test_an_extension_takes_the_general_path(monkeypatch):
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(chunk(_EXTENSION))
+
+
+def test_padding_takes_the_general_path(monkeypatch):
+    """P does not move the payload, but reading the flags octet whole is one
+    pass where four masks are four, so a padded packet is the general path's
+    rather than a fifth test on the fast one."""
+    padded = list(_PLAIN)
+    padded[0] = 0xA0  # V=2, P=1, X=0, CC=0
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(chunk(padded))
+
+
+def test_a_version_other_than_two_takes_the_general_path(monkeypatch):
+    """Version is reported rather than corrected, and only the general path
+    can report one the fast path's constant does not hold."""
+    wrong = list(_PLAIN)
+    wrong[0] = 0x40  # V=1
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(chunk(wrong))
+
+
+def test_a_packet_short_of_a_fixed_header_takes_the_general_path(monkeypatch):
+    """Every field of such a packet reads zero, which is a rule about a
+    packet rather than about a column."""
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(chunk(_PLAIN, stride=20), sizes=np.array([11]))
+
+
+def test_an_odd_stride_falls_back_rather_than_raising(monkeypatch):
+    """A 16-bit view needs an even number of octets a row. An odd stride is a
+    legitimate chunk that no column slice can read, so it takes the general
+    path and reads the same."""
+    rows = chunk(_PLAIN, stride=13)
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(rows)
+
+    monkeypatch.undo()
+    assert parse_rtp(rows).sequence.tolist() == [0x1234]
+
+
+def test_a_sub_block_of_a_wider_buffer_falls_back(monkeypatch):
+    """A header sub-block sliced out of a ring is not contiguous, so its rows
+    are not words either — the same fallback, for the same reason."""
+    buffer = chunk(_PLAIN, _NO_MARKER, stride=64)
+    rows = buffer[:, :16]
+    assert not rows.flags["C_CONTIGUOUS"]
+
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(rows)
+
+    monkeypatch.undo()
+    assert parse_rtp(rows).sequence.tolist() == [0x1234, 0xFFFF]
+
+
+def test_an_empty_chunk_takes_the_general_path(monkeypatch):
+    """Nothing to read a column of, and the general path already answers it."""
+    watch_paths(monkeypatch, rtp)
+    with pytest.raises(GeneralPathError):
+        parse_rtp(np.zeros((0, 12), dtype=np.uint8))

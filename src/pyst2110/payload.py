@@ -28,6 +28,23 @@ __all__ = ["PayloadHeaders", "parse_payload_headers"]
 # segments has to be bounded by something to stay vectorized across packets.
 _ST2110_SEGMENTS = 3
 
+# The header a conforming ST 2110-20 packet carries, whole: the RFC 3550
+# fixed header with neither a CSRC list nor an extension after it, two octets
+# of extended sequence number, and one SRD header.
+_CONFORMING_SIZE = (
+    _layout.FIXED_HEADER_SIZE + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE
+)
+# Where each of its fields sits in a big-endian 16-bit view of the chunk. Every
+# one is a whole word at an even octet, which is what makes the read a column
+# slice rather than a gather (§spec:conforming-fast-path).
+_SRD = _layout.FIXED_HEADER_SIZE + _layout.EXTENDED_SEQUENCE_SIZE
+_SEQUENCE_WORD = _layout.FIXED_HEADER_SIZE // 2
+_LENGTH_WORD = (_SRD + _layout.SRD_LENGTH) // 2
+_ROW_WORD = (_SRD + _layout.SRD_ROW) // 2
+_OFFSET_WORD = (_SRD + _layout.SRD_OFFSET) // 2
+# In the field's own width, so masking one does not widen it back again.
+_VALUE_MASK = np.uint16(_layout.VALUE_MASK)
+
 
 @dataclass(frozen=True)
 class PayloadHeaders:
@@ -59,12 +76,15 @@ class PayloadHeaders:
     #: Row of ``packets`` this descriptor came from.
     packet: NDArray[np.int64]
     #: SRD Length: octets of sample row data, a multiple of the pgroup.
-    length: NDArray[np.int64]
+    #: Sixteen bits on the wire and sixteen bits in meaning, so it is reported
+    #: in that width; a caller scaling it into a raster promotes it itself
+    #: (§spec:conforming-fast-path).
+    length: NDArray[np.uint16]
     #: SRD Row Number, counting from the top of the image (of the field, when
     #: interlaced). Fifteen bits as the wire carried them, so a packet may
     #: name a row no flow has; this parse holds no format to refuse it with.
     #: :func:`pyst2110.geometry.fits_raster` is what bounds it against one.
-    line: NDArray[np.int64]
+    line: NDArray[np.uint16]
     #: The F bit: which field of an interlaced image, or which segment of a
     #: PsF one. Always clear for progressive scan.
     field: NDArray[np.bool_]
@@ -73,7 +93,7 @@ class PayloadHeaders:
     #: turns it into one using the format's pgroup. Unbounded here for the
     #: same reason as :attr:`line`, and bounded by the same mask: the scaling
     #: carries a position past the row's width straight through.
-    offset_samples: NDArray[np.int64]
+    offset_samples: NDArray[np.uint16]
     #: Where this descriptor's data begins within its packet row. Derived
     #: from the declared lengths ahead of it, which are unchecked, so it can
     #: point past the packet — and ``size - source`` is then negative, which
@@ -121,6 +141,10 @@ def parse_payload_headers(
     buffer it actually reads. Rows and offsets are likewise as declared:
     :func:`pyst2110.geometry.fits_raster` bounds those against a flow, which
     needs a format this parse does not take (§spec:payload-header).
+
+    Which of the two parses runs is read from the chunk and never promised by
+    a caller (§spec:conforming-fast-path); the arrays returned are the same
+    either way.
     """
     _chunk.validate(packets, _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE)
     if max_segments < 1:
@@ -133,17 +157,85 @@ def parse_payload_headers(
         payload_offset, "payload offset", count=count, plural="offsets"
     )
     bounds = _chunk.limits(packets, sizes)
+    conforming = _conforming(packets, starts, bounds)
+    if conforming is not None:
+        return conforming
+    return _general(packets, starts, bounds, max_segments)
 
+
+def _conforming(
+    packets: NDArray[np.uint8],
+    starts: NDArray[np.int64],
+    bounds: NDArray[np.int64],
+    /,
+) -> PayloadHeaders | None:
+    """The chunk read as columns, or ``None`` where it is not that shape.
+
+    Two vector tests decide it, beside the check that the buffer can be read
+    as words at all. Every payload beginning at the fixed header's end is what
+    says no packet carried a CSRC list or an extension — the offsets come from
+    :func:`pyst2110.rtp.parse_rtp`, so the flags octet need not be read twice.
+    No first SRD setting its continuation bit is what says every packet
+    carries exactly one segment, which is what makes the descriptors
+    packet-aligned and the walk a single column slice a field
+    (§spec:conforming-fast-path).
+
+    ``max_segments`` does not appear: a chunk where nothing continues yields
+    one descriptor a packet at any bound of one or more, and one is already
+    the floor.
+    """
+    count = packets.shape[0]
+    if count == 0 or bounds.min() < _CONFORMING_SIZE:
+        return None
+    words = _chunk.u16_view(packets)
+    if words is None or (starts != _layout.FIXED_HEADER_SIZE).any():
+        return None
+    # Each flag tops its word, so a comparison against the flag reads the bit
+    # in one pass where a mask and a test against zero take two, and allocate
+    # twice.
+    offsets = words[:, _OFFSET_WORD]
+    if (offsets >= _layout.FLAG_MASK).any():
+        return None
+
+    lines = words[:, _ROW_WORD]
+    return PayloadHeaders(
+        extended_sequence=words[:, _SEQUENCE_WORD].astype(np.int64),
+        segments=np.ones(count, dtype=np.int64),
+        data_offset=np.full(count, _CONFORMING_SIZE, dtype=np.int64),
+        packet=np.arange(count, dtype=np.int64),
+        length=words[:, _LENGTH_WORD].astype(np.uint16),
+        line=(lines & _VALUE_MASK),
+        field=(lines >= _layout.FLAG_MASK),
+        offset_samples=(offsets & _VALUE_MASK),
+        # One segment a packet, so its data begins where the header ends.
+        source=np.full(count, _CONFORMING_SIZE, dtype=np.int64),
+        overflowed=np.zeros(count, dtype=np.bool_),
+    )
+
+
+def _general(
+    packets: NDArray[np.uint8],
+    starts: NDArray[np.int64],
+    bounds: NDArray[np.int64],
+    max_segments: int,
+    /,
+) -> PayloadHeaders:
+    """The reference parse: a bounded walk over each packet's segments.
+
+    Unchanged by the fast path beside it, and the authority where the two
+    disagree (§spec:conforming-fast-path).
+    """
+    count = packets.shape[0]
     # One row index for all nine reads below rather than one apiece: the
     # gather gets the same column vector every time, and allocating it per
     # field is pure overhead on a path that runs a thousand chunks a second.
     rows_index = np.arange(count, dtype=np.int64)
     sequence, readable = _chunk.read_u16(packets, starts, bounds, rows_index)
     shape = (count, max_segments)
-    length = np.zeros(shape, dtype=np.int64)
-    line = np.zeros(shape, dtype=np.int64)
+    length = np.zeros(shape, dtype=np.uint16)
+    line = np.zeros(shape, dtype=np.uint16)
     field = np.zeros(shape, dtype=np.bool_)
-    offset = np.zeros(shape, dtype=np.int64)
+    offset = np.zeros(shape, dtype=np.uint16)
     present = np.zeros(shape, dtype=np.bool_)
 
     # A segment exists only if the one before it set the continuation bit and
@@ -188,7 +280,7 @@ def parse_payload_headers(
     data_offset = starts + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE * parsed
     # Every segment's data follows the whole header, one after another, so a
     # segment starts where the lengths before it end.
-    preceding = np.cumsum(length, axis=1) - length
+    preceding = np.cumsum(length, axis=1, dtype=np.int64) - length
     source = data_offset[:, None] + preceding
 
     # A packet whose continuation was still set at the bound has SRD headers
