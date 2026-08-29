@@ -354,7 +354,6 @@ wheels = [
 
 [[package]]
 name = "pyst2110"
-version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
