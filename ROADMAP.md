@@ -86,6 +86,52 @@ it — one consumer is not the audit.
 after the first, and every existing caller reads the same values it reads
 today.
 
+## ST 2022-7 on a frame path §road:redundancy-cost
+
+`redundancy.reconstruct` costs 235.3 ns a packet — 963.8 us for a 4096-packet
+dual-leg chunk, and 4.07 ms of a 2160p60 frame period — measured against this
+tree at 2026-08-28, with a 600-packet hole in one leg reading 3.88 ms. That is
+the order `parse_payload_headers` was at before §spec:conforming-fast-path, on
+a function nothing has looked at.
+
+**Not a regression and not yet a fault.** No consumer calls it per chunk
+today, so nothing is paying this. What makes it worth a section rather than a
+Future bullet is that a consumer is coming: backlit_molecule's ST 2022-7 work
+is specified, and the ConvertIP bench rig already runs paired legs, so the
+first dual-leg receiver walks into a frame budget a quarter spent before it
+places a pixel. §req:priorities is the standing obligation — a parse is fast
+enough for the frame budget — and §spec:redundancy states the arithmetic
+without stating its cost, which is the gap a `/compose:plan` pass should
+close before this is built.
+
+**Where the time goes is unknown.** The figure is a measurement and the cause
+is not: nobody has profiled it, and the fast path's own lesson is that the
+obvious candidate can be wrong in place — a reduction that benchmarked faster
+in isolation halved the column read's speed in situ. Profile before
+prescribing, and re-measure through the benchmark.
+
+### The reconstruction inside the frame budget §road:redundancy-in-budget
+
+Bring `redundancy.reconstruct` to the order the chunk parse now runs at, in
+`src/pyst2110/redundancy.py` (§spec:redundancy, §req:priorities). Profile
+first: the cost is measured and its cause is not.
+
+### The benchmark covers the pair §road:redundancy-benchmark
+
+Extend `tools/parse-benchmark.py` to time a dual-leg chunk beside the single
+parses it already reports, so a second host confirms or contradicts the figure
+above rather than taking it (§spec:redundancy). Depends on
+§road:redundancy-in-budget for something to report.
+
+**Verify:** Run the benchmark on a host and confirm it reports the pair beside
+the parses, and that reconstruction has left the hundreds of nanoseconds a
+packet. Feed `reconstruct` two legs sharing no sequence range and confirm it
+still refuses rather than reporting total loss on both, and two legs where one
+carries a number twice and confirm the earliest arrival is still the one kept
+— the arithmetic §spec:redundancy fixes does not move because it got faster.
+Feed it the `convertip-2022-7-outage` capture and confirm the pair's reported
+loss, and the path differential, are what they were before.
+
 ## Future §road:future
 
 - **ipmx**: IPMX is ST 2110 with a different SDP profile and variable
