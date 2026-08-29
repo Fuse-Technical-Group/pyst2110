@@ -28,6 +28,18 @@ __all__ = ["PayloadHeaders", "parse_payload_headers"]
 # segments has to be bounded by something to stay vectorized across packets.
 _ST2110_SEGMENTS = 3
 
+# The conforming header's size and its word positions are `_layout`'s, stated
+# once there beside the octet offsets they are halved from — a parse reading a
+# field and a builder writing it have to agree, and two restatements agree
+# only until one is edited (§spec:conforming-fast-path).
+_CONFORMING_SIZE = _layout.CONFORMING_HEADER_SIZE
+_EXTENDED_WORD = _layout.EXTENDED_SEQUENCE_WORD
+_LENGTH_WORD = _layout.SRD_LENGTH_WORD
+_ROW_WORD = _layout.SRD_ROW_WORD
+_OFFSET_WORD = _layout.SRD_OFFSET_WORD
+# In the field's own width, so masking one does not widen it back again.
+_VALUE_MASK = np.uint16(_layout.VALUE_MASK)
+
 
 @dataclass(frozen=True)
 class PayloadHeaders:
@@ -59,6 +71,8 @@ class PayloadHeaders:
     #: Row of ``packets`` this descriptor came from.
     packet: NDArray[np.int64]
     #: SRD Length: octets of sample row data, a multiple of the pgroup.
+    #: Sixteen bits on the wire, reported at the width a consumer scales it
+    #: at (§spec:conforming-fast-path).
     length: NDArray[np.int64]
     #: SRD Row Number, counting from the top of the image (of the field, when
     #: interlaced). Fifteen bits as the wire carried them, so a packet may
@@ -121,6 +135,10 @@ def parse_payload_headers(
     buffer it actually reads. Rows and offsets are likewise as declared:
     :func:`pyst2110.geometry.fits_raster` bounds those against a flow, which
     needs a format this parse does not take (§spec:payload-header).
+
+    Which of the two parses runs is read from the chunk and never promised by
+    a caller (§spec:conforming-fast-path); the arrays returned are the same
+    either way.
     """
     _chunk.validate(packets, _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE)
     if max_segments < 1:
@@ -133,7 +151,90 @@ def parse_payload_headers(
         payload_offset, "payload offset", count=count, plural="offsets"
     )
     bounds = _chunk.limits(packets, sizes)
+    conforming = _conforming(packets, starts, bounds)
+    if conforming is not None:
+        return conforming
+    return _general(packets, starts, bounds, max_segments)
 
+
+def _conforming(
+    packets: NDArray[np.uint8],
+    starts: NDArray[np.int64],
+    bounds: NDArray[np.int64],
+    /,
+) -> PayloadHeaders | None:
+    """The chunk read as columns, or ``None`` where it is not that shape.
+
+    Three vector tests decide it, beside the check that the buffer can be read
+    as words at all, and every one of them reads the chunk rather than
+    anything a caller said about it. The flags octet equalling
+    :data:`pyst2110._layout.VERSION_2` is what says no packet carried a CSRC
+    list or an extension; ``payload_offset`` agreeing with that is what says
+    the offsets describe *this* chunk, since they are a caller's array and
+    :func:`pyst2110.rtp.parse_rtp` is only their usual source; and no first
+    SRD setting its continuation bit is what says every packet carries exactly
+    one segment, which is what makes the descriptors packet-aligned and the
+    walk a single column slice a field (§spec:conforming-fast-path).
+
+    *Why read the octet here too*, when the caller has usually just read it:
+    the path a chunk takes is a property of the chunk. Selecting on the
+    offsets alone would let a caller computing its own choose the path, which
+    is exactly what §spec:conforming-fast-path says nobody can do — and it
+    costs one comparison over a column already in cache.
+
+    ``max_segments`` does not appear: a chunk where nothing continues yields
+    one descriptor a packet at any bound of one or more, and one is already
+    the floor.
+    """
+    count = packets.shape[0]
+    if count == 0 or bounds.min() < _CONFORMING_SIZE:
+        return None
+    words = _chunk.u16_view(packets)
+    if (
+        words is None
+        or (packets[:, 0] != _layout.VERSION_2).any()
+        or (starts != _layout.FIXED_HEADER_SIZE).any()
+    ):
+        return None
+    # Each flag tops its word, so a comparison against the flag reads the bit
+    # in one pass where a mask and a test against zero take two, and allocate
+    # twice.
+    offsets = words[:, _OFFSET_WORD]
+    # A mask and `.any()` rather than `offsets.max()`: the column is a
+    # big-endian sixteen-bit slice, and numpy's reduction over one is the
+    # unbuffered loop, measured at twice the cost of the comparison it saves.
+    if (offsets >= _layout.FLAG_MASK).any():
+        return None
+
+    lines = words[:, _ROW_WORD]
+    return PayloadHeaders(
+        extended_sequence=words[:, _EXTENDED_WORD].astype(np.int64),
+        segments=np.ones(count, dtype=np.int64),
+        data_offset=np.full(count, _CONFORMING_SIZE, dtype=np.int64),
+        packet=np.arange(count, dtype=np.int64),
+        length=words[:, _LENGTH_WORD].astype(np.int64),
+        line=(lines & _VALUE_MASK).astype(np.int64),
+        field=(lines >= _layout.FLAG_MASK),
+        offset_samples=(offsets & _VALUE_MASK).astype(np.int64),
+        # One segment a packet, so its data begins where the header ends.
+        source=np.full(count, _CONFORMING_SIZE, dtype=np.int64),
+        overflowed=np.zeros(count, dtype=np.bool_),
+    )
+
+
+def _general(
+    packets: NDArray[np.uint8],
+    starts: NDArray[np.int64],
+    bounds: NDArray[np.int64],
+    max_segments: int,
+    /,
+) -> PayloadHeaders:
+    """The reference parse: a bounded walk over each packet's segments.
+
+    Unchanged by the fast path beside it, and the authority where the two
+    disagree (§spec:conforming-fast-path).
+    """
+    count = packets.shape[0]
     # One row index for all nine reads below rather than one apiece: the
     # gather gets the same column vector every time, and allocating it per
     # field is pure overhead on a path that runs a thousand chunks a second.
@@ -184,11 +285,11 @@ def parse_payload_headers(
         if not active.any():
             break
 
-    parsed = present.sum(axis=1).astype(np.int64)
+    parsed = present.sum(axis=1, dtype=np.int64)
     data_offset = starts + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE * parsed
     # Every segment's data follows the whole header, one after another, so a
     # segment starts where the lengths before it end.
-    preceding = np.cumsum(length, axis=1) - length
+    preceding = np.cumsum(length, axis=1, dtype=np.int64) - length
     source = data_offset[:, None] + preceding
 
     # A packet whose continuation was still set at the bound has SRD headers
@@ -197,7 +298,7 @@ def parse_payload_headers(
     # so the packet contributes none and the flag says why.
     overflowed = active
     present &= ~overflowed[:, None]
-    counted = present.sum(axis=1).astype(np.int64)
+    counted = present.sum(axis=1, dtype=np.int64)
 
     # A packet's segments are contiguous from the first — the continuation bit
     # cannot resume — so raveling packet-major keeps them in order.

@@ -16,7 +16,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from conftest import chunk
+from conftest import GeneralPathError, chunk, watch_paths
+from pyst2110 import payload
 from pyst2110.payload import PayloadHeaders, parse_payload_headers
 from pyst2110.rtp import parse_rtp
 
@@ -376,3 +377,125 @@ def test_an_offset_per_packet_is_required():
 def test_a_bound_below_one_segment_is_refused():
     with pytest.raises(ValueError, match="at least one"):
         parse(_ONE_SRD, max_segments=0)
+
+
+# --- which path the chunk chooses (SPEC §spec:conforming-fast-path) ----------
+#
+# The parse reads the choice off the chunk: every payload starting where the
+# fixed header ends says no packet carried a CSRC list or an extension, and no
+# first SRD setting its continuation bit says every packet carries exactly one
+# segment. A call that returns took the fast path; one that raises
+# `GeneralPathError` took the general one. That the two agree field for field
+# is `test_path_equality.py`'s.
+
+
+def _paths_watched(monkeypatch):
+    """Watch the payload parse alone: the RTP parse chooses for itself."""
+    watch_paths(monkeypatch, payload)
+
+
+def test_a_conforming_packet_is_read_by_column(monkeypatch):
+    rows = chunk(_ONE_SRD, _ONE_SRD)
+    offsets = parse_rtp(rows).payload_offset
+    _paths_watched(monkeypatch)
+    result = parse_payload_headers(rows, offsets)
+
+    assert result.extended_sequence.tolist() == [1, 1]
+    assert result.line.tolist() == [42, 42]
+    assert result.offset_samples.tolist() == [480, 480]
+    assert result.length.tolist() == [1200, 1200]
+    assert result.segments.tolist() == [1, 1]
+    assert result.source.tolist() == [20, 20]
+
+
+def test_a_second_segment_takes_the_general_path(monkeypatch):
+    """The continuation bit makes the descriptors segment-aligned, which no
+    column slice produces."""
+    rows = chunk(_ONE_SRD, _TWO_SRDS)
+    offsets = parse_rtp(rows).payload_offset
+    _paths_watched(monkeypatch)
+    with pytest.raises(GeneralPathError):
+        parse_payload_headers(rows, offsets)
+
+
+def test_a_payload_pushed_back_takes_the_general_path(monkeypatch):
+    """A CSRC list or an extension moves where the payload begins, and the
+    offsets are what say so — the flags octet is not read twice."""
+    rows = chunk(_ONE_SRD)
+    _paths_watched(monkeypatch)
+    with pytest.raises(GeneralPathError):
+        parse_payload_headers(rows, np.array([16]))
+
+
+def test_a_packet_short_of_a_whole_header_takes_the_general_path(monkeypatch):
+    rows = chunk(_ONE_SRD, stride=20)
+    _paths_watched(monkeypatch)
+    with pytest.raises(GeneralPathError):
+        parse_payload_headers(rows, np.array([12]), sizes=np.array([19]))
+
+
+def test_an_odd_stride_falls_back_rather_than_raising(monkeypatch):
+    rows = chunk(_ONE_SRD, stride=21)
+    offsets = parse_rtp(rows).payload_offset
+    _paths_watched(monkeypatch)
+    with pytest.raises(GeneralPathError):
+        parse_payload_headers(rows, offsets)
+
+    monkeypatch.undo()
+    assert parse_payload_headers(rows, offsets).line.tolist() == [42]
+
+
+def test_a_sub_block_of_a_wider_buffer_falls_back(monkeypatch):
+    buffer = chunk(_ONE_SRD, _ONE_SRD, stride=64)
+    rows = buffer[:, :24]
+    assert not rows.flags["C_CONTIGUOUS"]
+    offsets = parse_rtp(rows).payload_offset
+
+    _paths_watched(monkeypatch)
+    with pytest.raises(GeneralPathError):
+        parse_payload_headers(rows, offsets)
+
+    monkeypatch.undo()
+    assert parse_payload_headers(rows, offsets).line.tolist() == [42, 42]
+
+
+def test_the_bound_does_not_change_the_conforming_read(monkeypatch):
+    """A chunk where nothing continues yields one descriptor a packet at any
+    bound of one or more, so ``max_segments`` never forces the general path."""
+    rows = chunk(_ONE_SRD)
+    offsets = parse_rtp(rows).payload_offset
+    _paths_watched(monkeypatch)
+
+    for bound in (1, 2, 3, 8):
+        result = parse_payload_headers(rows, offsets, max_segments=bound)
+        assert result.segments.tolist() == [1]
+        assert result.line.tolist() == [42]
+
+
+def test_every_descriptor_is_wide_enough_to_scale_into_a_raster():
+    """Sixteen bits on the wire is not sixteen bits in a consumer's hands.
+
+    A descriptor is scaled into a raster the moment it is used — a row times
+    the pgroups in a line, an offset times a pgroup's octets — and under NEP 50
+    a Python multiplier adopts the array's own width rather than widening it.
+    Row 2159 of a 2160-line raster times 1152 pgroups a line is 2,487,168,
+    which an unsigned sixteen-bit array reports as 62,336: not an error, a
+    different part of the picture. So every descriptor is reported wide, and
+    the narrow read the fast path makes is its own business
+    (§spec:conforming-fast-path)."""
+    result = parse(_ONE_SRD)
+
+    for name in (
+        "length",
+        "line",
+        "offset_samples",
+        "extended_sequence",
+        "source",
+        "data_offset",
+        "packet",
+        "segments",
+    ):
+        assert getattr(result, name).dtype == np.int64, name
+
+    # The scaling that motivates it, on the widest row ST 2110-20 permits.
+    assert (result.line * 1152).dtype == np.int64

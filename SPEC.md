@@ -80,6 +80,16 @@ function returning one of these says so in its docstring, beside the shape.
 per packet is the one interface that cannot be made fast later without
 changing every caller.
 
+*Chunk-wide is a floor and not an answer.* An expression over a whole chunk
+can still cost far more than the octets it reads, and the two places that did
+are worth naming because they are different failures. The parse gathered at a
+per-packet offset where the offset was the same number for every packet
+(§spec:conforming-fast-path). `SequenceTracker.observe` — which holds no wire
+format at all, and is here rather than there for that reason — took a modulo
+where both sequence spaces are powers of two and a mask is exact, and copied
+the chunk to prepend the one scalar a straddling step needs. Measured at
+2160p60 and MAXUDP 1460, the tracker went from 0.34 ms a frame to 0.20.
+
 Functions are free where they read, and classes only where state spans
 calls — a sequence tracker carries the last number it saw, a frame
 assembler carries the packets of a frame in progress. Nothing else holds
@@ -185,15 +195,15 @@ raster rather than raising.
 
 ## The conforming fast path §spec:conforming-fast-path
 
-*Status: not started*
+*Status: complete*
 
 Vectorized is not the same as fast, and the difference here is a factor of
-forty. Every parse runs over a whole chunk (§spec:interface-shape), which is
+twelve. Every parse runs over a whole chunk (§spec:interface-shape), which is
 what §req:priorities asks for and what rules out a per-packet Python object.
 What it does not rule out is a vectorized expression costing far more than the
-data it reads: a chunk's header block at 4096 packets is 80 KiB, and the parse
-takes 1.16 ms over it — about 70 MB/s, three orders below what numpy does with
-80 KiB resident in cache.
+data it reads: a chunk's header block at 4096 packets is 80 KiB, and the
+general parse takes 1.48 ms over it — about 55 MB/s, three orders below what
+numpy does with 80 KiB resident in cache.
 
 **Where the time goes.** The payload offset is per packet, because a CSRC list
 or an RTP header extension moves where the payload begins (§spec:rtp). Reading
@@ -208,19 +218,42 @@ words.
 
 The parse therefore takes one of two paths, chosen from the chunk itself:
 
-- The **fast path**, where the chunk carries no CSRC list, no extension bit
-  and no continuation flag. Fields are read at their fixed offsets and stay in
-  their own width — a sixteen-bit field is a sixteen-bit array, promoted only
-  where a caller's arithmetic needs it.
-- The **general path**, unchanged, for every other chunk: a packet carrying a
-  CSRC list, an RTP extension, or more than one segment.
+- The **fast path**, where every packet's flags octet is exactly version two
+  with no padding, no extension and no CSRC list, no first segment sets its
+  continuation flag, and every packet carries a whole header. Fields are read
+  at their fixed offsets in their own width and widened once on the way out.
+- The **general path**, unchanged, for every other chunk: a CSRC list, an RTP
+  extension, more than one segment, a padded packet, a version that is not
+  two, or a packet shorter than a whole header.
 
-*The choice is read, never promised.* Three vector tests over the chunk decide
-it — the flags byte's CSRC count and extension bit, and the first segment's
-continuation flag — costing about a nanosecond a packet against the hundreds
-they save. A caller cannot assert conformance and an SDP cannot declare it: a
-sender that changes its packetization mid-flow changes the path at the next
-chunk, and nothing outside the bytes is consulted.
+*The predicate is the whole octet, not the two bits that move the offset.*
+Padding does not move where a payload begins, so a padded packet could take the
+fast path — but reading the octet whole is one comparison where a mask and a
+test are two, and it settles four fields as constants at the same time. The
+stricter test is therefore the cheaper one, and what it costs is that a padded
+packet — which no ST 2110-20 video sender emits — takes the general path.
+
+*The choice is read, never promised.* Both parses decide from the chunk's own
+bytes: `parse_payload_headers` reads the flags octet for itself rather than
+inferring conformance from the offsets handed to it, because those are a
+caller's array, and the path a chunk takes shall not be a caller's to pick. A sender that
+changes its packetization mid-flow changes the path at the next chunk, and
+nothing outside the bytes is consulted.
+
+Two shapes fall back for a reason that is not the sender's: an odd stride and
+a sub-block sliced out of a wider buffer are legitimate chunks that no column
+slice can reinterpret. They take the general path rather than raising, and
+they are how the suite reaches that path — a gate that stubbed the column read
+out would be comparing the library against something that is not the library.
+
+**Every descriptor is reported wide, whichever path read it.** A sixteen-bit
+field on the wire is not sixteen bits in a consumer's hands: a row is scaled by
+the pgroups in a line and an offset by a pgroup's octets, and under NEP 50 a
+Python multiplier adopts the array's own width rather than widening it. Row
+2159 of a 2160-line raster times 1152 pgroups a line is 2,487,168, which an
+unsigned sixteen-bit array reports as 62,336 — not an error, a different part
+of the picture. The narrow read is the fast path's own business and is widened
+before it is returned, at a cost measured at 1.5 ns a packet.
 
 *Why not the fast path alone*: a CSRC list, an RTP extension and a multi-SRD
 packet are all legal. A library that parsed only the shape it prefers would
@@ -228,17 +261,47 @@ report a line that does not exist rather than a packet it could not read,
 which is the failure §spec:payload-header exists to avoid.
 
 **The two paths agree field for field.** That is a gate rather than a claim:
-the suite parses the same packets both ways and compares every array —
-sequence, marker, extended sequence, segment count, and each segment's length,
-line and offset — over hand-written vectors and over the captures taken off
-real senders alike (§spec:testing). The general path is the reference; where
-the two disagree, the fast path is what is wrong.
+the suite parses the same packets both ways and compares every array — values,
+shapes and widths — over hand-written vectors and over a chunk carrying a real
+sender's captured sequence stream, outage included (§spec:testing). The
+general path is the reference; where the two disagree, the fast path is what
+is wrong. The conforming cases assert the columns really read them, so two
+general parses cannot pass the gate by agreeing with each other.
 
-**Measured** on a 4096-packet chunk of conforming one-SRD packets: 282.3 ns a
-packet against 7.1. At 2160p60 and MAXUDP 1460 — 17,280 packets a frame —
-that is 4.88 ms of a 16.68 ms frame period against 0.12 ms. The consumer that
-found it was spending 9.35 ms of that period inside this library and losing
-about a third of the wire to the shortfall.
+**What it costs, and what pays for it.** Measured on a 4096-packet chunk of
+conforming one-SRD headers, and reproducible with `tools/parse-benchmark.py`
+rather than taken on trust:
+
+| entry point | general | fast |
+| --- | --- | --- |
+| `parse_rtp` | 60.2 ns a packet | 15.1 |
+| `parse_payload_headers` | 279.7 | 14.0 |
+| both | 360.8 | 29.9 |
+
+At 2160p60 and MAXUDP 1460 — 17,280 packets a frame — that is 6.23 ms of a
+16.68 ms frame period against 0.52. The consumer that found it was spending
+9.35 ms of that period inside this library and losing about a third of the
+wire to the shortfall.
+
+**Buffer policy: the scratch is the parse's, the returns are the caller's.**
+The cyclic collector is not on this path — numpy arrays are freed by refcount
+and this code makes no cycles, so freezing or disabling the collector buys
+nothing, and saying otherwise would be wrong. What costs is *allocation*:
+malloc, first-touch page faults and the free, for every temporary above
+numpy's small-array cache, which a 4096-element array is well past. So an
+operation writes through `out=` wherever a destination already exists, and a
+flag is read by one comparison rather than by a mask and a test.
+`src/pyst2110/transmit.py` holds its scratch across calls because it is an
+object with a lifetime; the parses are free functions holding no state by
+design (§spec:payload-header), so what they eliminate is temporaries within a
+call, not allocation across calls. A parse that owned scratch would be a new
+object, not a change to these.
+
+The arrays a parse *returns* are freshly allocated and owned by the caller.
+Borrowing them back would be a contract change — §req:users names
+capture-analysis scripts as first-class callers, and they hold arrays across
+calls — so it needs its own audit rather than a performance pass's side
+effect.
 
 *Why this rather than a compiled extension*: §spec:packaging trades a C
 extension away for portability, against "a speed nothing has yet asked for".

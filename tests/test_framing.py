@@ -349,3 +349,58 @@ def test_interlaced_frames_without_the_f_bit_pair_the_fields():
     marker = np.array([False, True, False, True, False, True, False])
     starts = frame_starts(marker, interlaced=True, previous=True)
     assert starts.tolist() == [True, False, False, False, True, False, False]
+
+
+# --- the step arithmetic (SPEC §spec:conforming-fast-path) -------------------
+#
+# Both sequence spaces are powers of two, so taking a difference forward is a
+# mask rather than a modulo. The identity holds only for a power of two, and
+# only in two's complement, so it is pinned at the edges rather than assumed.
+
+
+def test_a_step_backwards_masks_to_the_same_forward_distance():
+    """The wrap and the reordering case are the two the mask has to get
+    right: 0 - 65535 is one forward, and 10 - 11 is 65535 forward."""
+    tracker = SequenceTracker()
+    tracker.observe(np.array([65535, 0]))
+    assert tracker.discontinuities == 0
+
+    backwards = SequenceTracker()
+    backwards.observe(np.array([11, 10]))
+    assert backwards.reordered == 1
+    assert backwards.discontinuities == 1
+
+
+def test_the_wide_space_masks_at_its_own_edge():
+    """2^32 is a power of two as well, so the same identity carries the
+    thirty-two-bit count over its own wrap."""
+    tracker = SequenceTracker()
+    tracker.observe(np.array([0xFFFF, 0x0000]), extended=np.array([0xFFFF, 0x0000]))
+    assert tracker.received == 2
+    assert tracker.lost == 0
+    assert tracker.discontinuities == 0
+
+
+def test_a_straddling_step_is_classified_once_and_only_there():
+    """The step from the previous chunk's last number is written into the
+    first slot rather than prepended to a copy of the chunk, so a gap on the
+    boundary is counted exactly where it lands."""
+    tracker = SequenceTracker()
+    tracker.observe(np.arange(100, 110))
+    tracker.observe(np.arange(115, 125))
+    assert tracker.discontinuities == 1
+    assert tracker.lost == 5
+
+
+def test_the_tracker_takes_the_widths_the_parses_report():
+    """`parse_rtp` reports the RTP sequence as sixteen bits and
+    `parse_payload_headers` the extended half wide, so the tracker is fed
+    two dtypes and has to widen them itself."""
+    tracker = SequenceTracker()
+    tracker.observe(
+        np.array([65534, 65535, 0, 1], dtype=np.uint16),
+        extended=np.array([7, 7, 8, 8], dtype=np.int64),
+    )
+    assert tracker.received == 4
+    assert tracker.lost == 0
+    assert tracker.discontinuities == 0

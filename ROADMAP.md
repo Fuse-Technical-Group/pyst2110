@@ -38,43 +38,53 @@ the parameter.
 
 ## The conforming fast path §road:fast-path
 
-A chunk of conforming ST 2110-20 packets is parsed by reading columns rather
-than by gathering at per-packet offsets, and the parse chooses between the two
-from the chunk's own bytes (§spec:conforming-fast-path). Measured at 282.3 ns
-a packet against 7.1 on a 4096-packet chunk — 4.88 ms of a 2160p60 frame
-period against 0.12 — which is the difference between a consumer holding the
-raster and losing a third of the wire to it.
+The parse chooses between a column read and the general walk from the chunk's
+own bytes, and the two agree field for field under a CI gate
+(§spec:conforming-fast-path). Measured at 360.8 ns a packet against 29.9 on a
+4096-packet chunk — 6.23 ms of a 2160p60 frame period against 0.52.
 
-### The fast read and its selection §road:fast-path-read
+### What the column read left behind §road:fast-path-second-pass
 
-Read a conforming chunk's fields as column slices over a big-endian
-sixteen-bit view at their native width, selected by the three vector tests
-that identify such a chunk, in `src/pyst2110/rtp.py`, `src/pyst2110/payload.py`
-and `src/pyst2110/_chunk.py` (§spec:conforming-fast-path). No entry point
-changes: a caller sees the same arrays.
+Take the remaining per-chunk waste the fast path exposed, in
+`src/pyst2110/rtp.py`, `src/pyst2110/payload.py`, `src/pyst2110/framing.py` and
+`src/pyst2110/_chunk.py` (§spec:conforming-fast-path, §spec:interface-shape).
+Measured on a 4096-packet chunk, each independently:
 
-### Equality with the general path, in CI §road:fast-path-equality
+- A thirty-two-bit field read as two sixteen-bit columns, where the chunk views
+  as `>u4` for nothing: `parse_rtp` fast 15.0 to 10.3 ns a packet.
+- `SequenceTracker.observe` has no conforming case of its own — a gapless chunk
+  still makes three bool passes, a masked subtract, a `flatnonzero` and a
+  `cumsum`, where every step being one makes the span update closed-form:
+  50.4 to 15.5 us a chunk.
+- The general path's post-loop work scales with `max_segments` rather than with
+  the segments the loop reached, and materializes a `count x max_segments`
+  index array to mask it down again: 265 to 119 ns a packet.
+- `frame_boundaries` still shifts by one with the `np.concatenate` the tracker
+  stopped using, and `FrameTracker.observe` copies a `cumsum` that is already
+  int64.
+- With no sizes, `limits` fills and scans a 32 KiB constant array so
+  `_conforming` can read one number off it.
 
-Assert the two paths agree field for field over the hand-written vectors and
-the real-sender captures both, in `tests/test_rtp.py`,
-`tests/test_payload_header.py` and `tests/captures/`
-(§spec:conforming-fast-path, §spec:testing). Depends on §road:fast-path-read.
+**Measure in place, not in isolation.** A reduction that replaced a mask and
+`.any()` on the offset column benchmarked faster alone and made the fast path
+twice as slow in situ — numpy's reduction over a big-endian strided column is
+the unbuffered loop. Every item above is quoted from an isolated measurement
+and shall be re-measured through `tools/parse-benchmark.py` before it lands.
 
-### The reading is reproducible on another host §road:parse-benchmark
+### Returns the caller borrows §road:fast-path-borrowed-returns
 
-A script under `tools/` that times both paths over a chunk it builds itself
-and prints the per-packet cost and the frame period it implies, so a second
-host confirms or contradicts the figure in §spec:conforming-fast-path rather
-than taking it (§spec:conforming-fast-path). Depends on §road:fast-path-read.
+Let a caller hand the parse the arrays to fill, so a steady-state receiver
+allocates nothing per chunk, in `src/pyst2110/rtp.py` and
+`src/pyst2110/payload.py` (§spec:conforming-fast-path). Blocked on a spec
+paragraph and a consumer audit, not on the code: the returns are owned by the
+caller today, and §req:users names capture-analysis scripts that hold arrays
+across calls. The one surveyed consumer's `FrameAssembler` rescales every
+field into new arrays inside the same call, so a borrowed contract would suit
+it — one consumer is not the audit.
 
-**Verify:** Run the benchmark on a host and confirm the fast path is an order
-of magnitude or better under the general path, and that both report the same
-`ns/packet` shape of reading the same chunk. Feed the parse a packet carrying
-an RTP extension, one carrying a CSRC list, and one carrying two SRD headers,
-and confirm each takes the general path and returns what it returns today.
-Feed it the `convertip-2022-7-outage` capture and confirm the two paths agree
-on every field across it, loss window included. Confirm no public entry point
-gained an argument: a caller upgrading gets the speed without editing a call.
+**Verify:** A receive loop over a hundred chunks allocates no per-chunk array
+after the first, and every existing caller reads the same values it reads
+today.
 
 ## Future §road:future
 

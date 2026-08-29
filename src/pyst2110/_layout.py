@@ -57,3 +57,29 @@ VALUE_MASK = 0x7FFF
 #: written into one wraps in, and the bound a caller's own is checked against.
 U16_MODULUS = 1 << 16
 U32_MODULUS = 1 << 32
+
+#: Octets a conforming ST 2110-20 packet's header occupies, whole: the RFC
+#: 3550 fixed header with neither a CSRC list nor an extension after it, the
+#: extended sequence number, and one SRD header. Stated once because a parse
+#: reading it and a builder writing it agreeing with each other is the whole
+#: point of this module — two restatements agree until one of them is edited.
+CONFORMING_HEADER_SIZE = FIXED_HEADER_SIZE + EXTENDED_SEQUENCE_SIZE + SRD_SIZE
+
+#: Where the one SRD header begins in such a packet.
+SRD_BASE = FIXED_HEADER_SIZE + EXTENDED_SEQUENCE_SIZE
+
+#: The width of the field the wire carries most of its numbers in, and the
+#: modulus that follows from it. A sequence space, a half of a thirty-two-bit
+#: number and the stride of a column read are all this one fact.
+U16_BITS = 16
+U16_SIZE = U16_BITS // 8
+
+#: Word positions in a big-endian sixteen-bit view of a conforming header —
+#: the octet offsets above, halved. Stated here beside the octets they come
+#: from, so the column read is covered by the same single statement the
+#: gather is.
+SEQUENCE_WORD = SEQUENCE // U16_SIZE
+EXTENDED_SEQUENCE_WORD = FIXED_HEADER_SIZE // U16_SIZE
+SRD_LENGTH_WORD = (SRD_BASE + SRD_LENGTH) // U16_SIZE
+SRD_ROW_WORD = (SRD_BASE + SRD_ROW) // U16_SIZE
+SRD_OFFSET_WORD = (SRD_BASE + SRD_OFFSET) // U16_SIZE

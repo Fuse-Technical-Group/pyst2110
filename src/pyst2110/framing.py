@@ -18,11 +18,15 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from pyst2110 import _chunk
+from pyst2110 import _chunk, _layout
 
 __all__ = ["FrameTracker", "SequenceTracker", "frame_boundaries", "frame_starts"]
 
 _SEQUENCE_SPACE = 1 << 16
+
+#: The RFC 4175 extended sequence number is the high half of the count, so
+#: joining the two is a shift of the sixteen bits the RTP field holds.
+_EXTENDED_SHIFT = _layout.U16_BITS
 
 # ST 2110-20 section 6.1.5: an interlaced frame is sent as two fields, so an
 # interlaced flow marks twice per frame.
@@ -199,7 +203,9 @@ class SequenceTracker:
                 count=int(numbers.size),
                 plural="numbers",
             )
-            numbers = (high << 16) | numbers
+            wide = high << _EXTENDED_SHIFT
+            wide |= numbers
+            numbers = wide
         if numbers.size == 0:
             return
         if extended is None:
@@ -228,21 +234,41 @@ class SequenceTracker:
         if landed.size == 0:
             return
 
-        # Each packet's forward distance from the one before it. The previous
-        # chunk's last number is the predecessor of this chunk's first, which
-        # is what classifies a straddling step once and only there.
-        befores = np.concatenate(([previous], landed[:-1]))
-        steps = ((landed - befores) % self._space).astype(np.int64)
-
+        steps = self._steps(landed, previous)
         self.discontinuities += int(np.count_nonzero(steps != 1))
         self.duplicated += int(np.count_nonzero(steps == 0))
-        self.reordered += int(np.count_nonzero(steps >= self._space - _MAX_MISORDER))
-        self._widen(landed, steps)
+        backward = steps >= self._space - _MAX_MISORDER
+        self.reordered += int(np.count_nonzero(backward))
+        # Signed here, where the counting above has just finished with the
+        # unsigned array — a step read as reordering becomes a small negative
+        # one, which is also what leaves a resync as the only thing still at
+        # or past the dropout bound. Doing it inside :meth:`_widen` would put
+        # that ordering in prose across a method boundary.
+        np.subtract(steps, self._space, out=steps, where=backward)
+        self._widen(landed, steps, previous)
+
+    def _steps(self, landed: NDArray[np.int64], previous: int) -> NDArray[np.int64]:
+        """Each packet's forward distance from the one before it.
+
+        The previous chunk's last number is the predecessor of this chunk's
+        first, which is what classifies a straddling step once and only there.
+        Written into one array rather than prepended to a copy of the chunk:
+        the neighbouring differences are a subtraction of two overlapping
+        slices, and the straddling step is one scalar.
+
+        Both sequence spaces are powers of two, so the modulo that takes a
+        difference forward is exactly a mask — and a mask over a chunk this
+        size is worth the arithmetic identity being written down
+        (§spec:interface-shape).
+        """
+        steps = np.empty(landed.size, dtype=np.int64)
+        steps[0] = landed[0] - previous
+        np.subtract(landed[1:], landed[:-1], out=steps[1:])
+        steps &= self._space - 1
+        return steps
 
     def _widen(
-        self,
-        landed: NDArray[np.int64],
-        steps: NDArray[np.int64],
+        self, landed: NDArray[np.int64], steps: NDArray[np.int64], base: int
     ) -> None:
         """Grow the observed span to cover this chunk, unwrapping as it goes.
 
@@ -253,23 +279,29 @@ class SequenceTracker:
         Vectorized between resyncs rather than per packet. A resync breaks the
         running total by construction, so the walk is over resyncs — normally
         none — and never over packets.
-        """
-        backward = steps >= self._space - _MAX_MISORDER
-        resync = (steps >= self._dropout) & ~backward
-        signed = np.where(backward, steps - self._space, steps)
 
+        ``steps`` arrives signed: a step read as reordering is already a small
+        negative one, which is what leaves a resync as the only thing still at
+        or past the dropout bound.
+
+        ``base`` is the extended number the first step leads from. It is
+        ``self._extended``, which the caller has just resolved or opened — and
+        passing it is what lets this method take an ``int`` where the attribute
+        is ``int | None``, rather than re-narrowing state the caller already
+        narrowed.
+        """
         start = 0
-        base = self._extended
-        for cut in [*np.flatnonzero(resync).tolist(), landed.size]:
+        for cut in [*np.flatnonzero(steps >= self._dropout).tolist(), landed.size]:
             if cut > start:
-                extended = base + np.cumsum(signed[start:cut])
+                extended = np.cumsum(steps[start:cut])
+                extended += base
                 self._lowest = min(self._lowest, int(extended.min()))
                 self._highest = max(self._highest, int(extended.max()))
                 base = int(extended[-1])
             if cut < landed.size:
                 self.resyncs += 1
-                self._reopen(int(landed[cut]))
-                base = self._extended
+                base = int(landed[cut])
+                self._reopen(base)
                 start = cut + 1
         self._extended = base
 

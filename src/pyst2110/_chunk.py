@@ -106,3 +106,20 @@ def read_u16(
     high = packets[rows, index].astype(np.int64)
     low = packets[rows, index + 1].astype(np.int64)
     return np.where(inside, (high << 8) | low, 0).astype(np.int64), inside
+
+
+def u16_view(packets: NDArray[np.uint8]) -> NDArray[np.uint16] | None:
+    """The whole chunk as big-endian 16-bit words, or ``None`` if it cannot be.
+
+    Reinterpreting the buffer is what turns a header field into a column
+    slice, and a column slice is what the conforming fast path is made of
+    (§spec:conforming-fast-path). It needs the rows contiguous and an even
+    number of octets in each; a caller handing over an odd stride, or a
+    sub-block sliced out of a wider buffer, gets ``None`` and the general path
+    rather than an exception. Both are legitimate chunks — they are simply not
+    ones a column slice can read.
+    """
+    if packets.shape[1] % _U16_SIZE != 0 or not packets.flags["C_CONTIGUOUS"]:
+        return None
+    view: NDArray[np.uint16] = packets.view(">u2")
+    return view
