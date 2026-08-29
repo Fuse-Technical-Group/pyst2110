@@ -17,7 +17,9 @@ import pytest
 from pyst2110.sdp import (
     SdpFlow,
     SdpVideo,
+    format_dup_sdp,
     format_sdp,
+    parse_dup_sdp,
     parse_sdp,
     parse_video_format,
 )
@@ -807,3 +809,246 @@ def test_the_2110_21_parameters_parse_back_to_the_format_that_wrote_them(
 ):
     described = video(**overrides)
     assert parse_video_format(format_sdp(_FLOW, described)) == described
+
+
+# --- ST 2022-7 duplication --------------------------------------------------
+#
+# The vector below is RFC 7104 section 8.2's own example, "Separate
+# Destination Addresses", transcribed line for line: a session-level
+# a=group:DUP naming the a=mid: tags of two m=video blocks, each block
+# carrying its own c= and a=source-filter. Its payload is MP2T rather than raw
+# video, and the RFC's own spellings are kept — no space after the
+# source-filter colon, a /127 scope — because a vector edited towards what
+# this library writes is the writer again (§spec:testing).
+
+_RFC_7104_DUP = """\
+v=0
+o=ali 1122334455 1122334466 IN IP4 dup.example.com
+s=DUP Grouping Semantics
+t=0 0
+a=group:DUP S1a S1b
+m=video 30000 RTP/AVP 100
+c=IN IP4 233.252.0.1/127
+a=source-filter:incl IN IP4 233.252.0.1 198.51.100.1
+a=rtpmap:100 MP2T/90000
+a=mid:S1a
+m=video 30000 RTP/AVP 101
+c=IN IP4 233.252.0.2/127
+a=source-filter:incl IN IP4 233.252.0.2 198.51.100.1
+a=rtpmap:101 MP2T/90000
+a=mid:S1b
+"""
+
+
+def test_both_legs_of_a_duplicated_offer_are_read():
+    """Each leg is its own block's connection and source filter."""
+    assert parse_dup_sdp(_RFC_7104_DUP) == (
+        SdpFlow("233.252.0.1", 30000, "198.51.100.1"),
+        SdpFlow("233.252.0.2", 30000, "198.51.100.1"),
+    )
+
+
+def test_the_legs_come_back_in_the_order_the_group_names_them():
+    """That order decides which leg is which everywhere downstream, so it is
+    the group and not the document order that is read (§spec:redundancy)."""
+    text = _RFC_7104_DUP.replace("a=group:DUP S1a S1b", "a=group:DUP S1b S1a")
+    first, second = parse_dup_sdp(text)
+    assert first.destination_ip == "233.252.0.2"
+    assert second.destination_ip == "233.252.0.1"
+
+
+def test_two_tags_over_one_media_block_are_refused():
+    """The failure the refusal exists for: a sender that emitted one leg where
+    two were meant sends unprotected essence and reports success."""
+    text = _RFC_7104_DUP.partition("m=video 30000 RTP/AVP 101")[0]
+    with pytest.raises(ValueError, match="DUP"):
+        parse_dup_sdp(text)
+
+
+def test_one_tag_over_two_media_blocks_is_refused():
+    """Rivermax's rmx_output_media_set_sdp states the rule from the other
+    side: the number of identification tags "has to correspond to the number
+    of m=video blocks"."""
+    text = _RFC_7104_DUP.replace("a=group:DUP S1a S1b", "a=group:DUP S1a")
+    with pytest.raises(ValueError, match="DUP"):
+        parse_dup_sdp(text)
+
+
+def test_a_tag_naming_no_media_block_is_refused():
+    """The counts agree here and the tags still do not name the blocks."""
+    text = _RFC_7104_DUP.replace("a=mid:S1b", "a=mid:S2b")
+    with pytest.raises(ValueError, match="S1b"):
+        parse_dup_sdp(text)
+
+
+def test_a_group_naming_one_block_twice_is_refused():
+    """Two tags and two blocks, and one leg described twice — one path, not
+    two, and the receiver joins the same socket from both."""
+    text = _RFC_7104_DUP.replace("a=group:DUP S1a S1b", "a=group:DUP S1a S1a")
+    with pytest.raises(ValueError, match="S1a"):
+        parse_dup_sdp(text)
+
+
+def test_two_media_blocks_carrying_one_tag_are_refused():
+    text = _RFC_7104_DUP.replace("a=mid:S1b", "a=mid:S1a")
+    with pytest.raises(ValueError, match="S1a"):
+        parse_dup_sdp(text)
+
+
+def test_more_legs_than_a_pair_are_refused():
+    """A pair is what this library models — pyst2110.redundancy reconstructs
+    two legs — and what Rivermax carries, RMX_MAX_DUP_STREAMS being two. A
+    third leg is one nothing downstream of the parse can take."""
+    text = _RFC_7104_DUP.replace("a=group:DUP S1a S1b", "a=group:DUP S1a S1b S1c")
+    third = (
+        "m=video 30000 RTP/AVP 102\n"
+        "c=IN IP4 233.252.0.3/127\n"
+        "a=source-filter:incl IN IP4 233.252.0.3 198.51.100.1\n"
+        "a=mid:S1c\n"
+    )
+    with pytest.raises(ValueError, match="two"):
+        parse_dup_sdp(text + third)
+
+
+@pytest.mark.parametrize(
+    ("declared", "written", "message"),
+    [
+        ("c=IN IP4 233.252.0.2/127\n", "", "connection"),
+        ("m=video 30000 RTP/AVP 101", "m=video 0 RTP/AVP 101", "port 0"),
+    ],
+)
+def test_a_leg_that_describes_no_flow_is_named_by_its_tag(
+    declared: str, written: str, message: str
+):
+    """Each leg is held to what a single-leg offer is held to, and the tag is
+    what says which of the two the caller has to fix."""
+    with pytest.raises(ValueError, match=f"S1b.*{message}"):
+        parse_dup_sdp(_RFC_7104_DUP.replace(declared, written))
+
+
+def test_a_leg_without_its_own_connection_takes_the_sessions():
+    """RFC 4566 section 5.7 scopes a session-level c= to every media section
+    supplying none, which is how RFC 7104 section 8.1's one group address
+    reaches both legs."""
+    text = _RFC_7104_DUP.replace("c=IN IP4 233.252.0.2/127\n", "").replace(
+        "t=0 0", "c=IN IP4 233.252.0.9\nt=0 0"
+    )
+    assert parse_dup_sdp(text)[1].destination_ip == "233.252.0.9"
+
+
+def test_a_single_leg_offer_is_not_a_redundant_pair():
+    with pytest.raises(ValueError, match="a=group:DUP"):
+        parse_dup_sdp(_ST2110_20)
+
+
+def test_a_redundant_offer_is_not_read_as_one_leg():
+    """parse_sdp returns one flow, so handed a pair it would return whichever
+    block came first — and the caller would join, or send, one leg of two."""
+    with pytest.raises(ValueError, match="parse_dup_sdp"):
+        parse_sdp(_RFC_7104_DUP)
+
+
+def test_a_port_count_does_not_make_an_offer_redundant():
+    """RFC 4566's port field is ``port ["/" integer]``, which an ST 2022-7
+    offer may carry. a=group:DUP is what makes a pair, and this document is
+    one leg however its port is spelled."""
+    text = "c=IN IP4 239.0.0.1\nm=video 20000/2 RTP/AVP 96\n"
+    assert parse_sdp(text) == SdpFlow("239.0.0.1", 20000)
+    with pytest.raises(ValueError, match="a=group:DUP"):
+        parse_dup_sdp(text)
+
+
+def test_a_grouping_that_is_not_duplication_leaves_a_single_leg_offer_alone():
+    """RFC 5888 carries other semantics on a=group:, and only DUP means a
+    redundant pair (RFC 7104 section 5)."""
+    text = "a=group:LS 1 2\nc=IN IP4 239.0.0.1\nm=video 20000 RTP/AVP 96\n"
+    assert parse_sdp(text).destination_port == 20000
+
+
+# The same document in the direction this library writes. The group line is a
+# session-level attribute, so RFC 4566 section 5 puts it after t= and before
+# the first media section; each block carries its own connection, source
+# filter and identification tag, and the two blocks describe one essence, so
+# the format line is the same line twice.
+_SECOND_LEG = SdpFlow("239.100.0.2", 20000, "192.168.101.2")
+
+_DUP_OFFER_LINES = [
+    "v=0",
+    "o=- 0 0 IN IP4 192.168.100.2",
+    "s= ",
+    "t=0 0",
+    "a=group:DUP 1 2",
+    "m=video 20000 RTP/AVP 96",
+    "c=IN IP4 239.100.0.1/64",
+    "a=source-filter: incl IN IP4 239.100.0.1 192.168.100.2",
+    "a=mid:1",
+    "a=rtpmap:96 raw/90000",
+    _OFFER_LINES[-1],
+    "m=video 20000 RTP/AVP 96",
+    "c=IN IP4 239.100.0.2/64",
+    "a=source-filter: incl IN IP4 239.100.0.2 192.168.101.2",
+    "a=mid:2",
+    "a=rtpmap:96 raw/90000",
+    _OFFER_LINES[-1],
+]
+
+
+def test_an_emitted_dup_offer_is_the_document_rfc_7104_requires():
+    assert format_dup_sdp(_FLOW, _SECOND_LEG, _VIDEO) == "".join(
+        f"{line}\r\n" for line in _DUP_OFFER_LINES
+    )
+
+
+def test_the_dup_tags_are_as_many_as_the_video_blocks_and_name_them():
+    """The rule RFC 7104 and Rivermax both state, asserted over the document
+    this library writes rather than over the one it reads."""
+    lines = format_dup_sdp(_FLOW, _SECOND_LEG, _VIDEO).split("\r\n")
+    tags = next(one for one in lines if one.startswith("a=group:DUP")).split()[1:]
+    assert len(tags) == len([one for one in lines if one.startswith("m=video ")]) == 2
+    assert [f"a=mid:{tag}" for tag in tags] == [
+        one for one in lines if one.startswith("a=mid:")
+    ]
+
+
+def test_one_flow_written_twice_is_not_a_redundant_pair():
+    """Two blocks naming one socket describe one path, and an offer that says
+    otherwise claims a protection the sender has not got."""
+    with pytest.raises(ValueError, match="one leg"):
+        format_dup_sdp(_FLOW, _FLOW, _VIDEO)
+
+
+def test_two_legs_may_share_a_group_where_their_senders_differ():
+    """Source-specific multicast: one group, two sources, two paths — RFC
+    7104 section 8.1's case written as section 8.2's two blocks."""
+    second = SdpFlow("239.100.0.1", 20000, "192.168.101.2")
+    assert parse_dup_sdp(format_dup_sdp(_FLOW, second, _VIDEO)) == (_FLOW, second)
+
+
+def test_every_leg_is_validated_as_a_single_leg_offer_is():
+    """One set of rules for a flow: a multicast leg naming no sender is
+    refused wherever it appears."""
+    with pytest.raises(ValueError, match="any_source"):
+        format_dup_sdp(_FLOW, SdpFlow("239.100.0.2", 20000), _VIDEO)
+
+
+def test_the_video_format_of_a_duplicated_offer_is_the_one_both_legs_carry():
+    """Two paths, one essence, so the format parse is the one a caller
+    already had and reads the first block's fmtp line."""
+    assert parse_video_format(format_dup_sdp(_FLOW, _SECOND_LEG, _VIDEO)) == _VIDEO
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "any_source"),
+    [
+        (_FLOW, _SECOND_LEG, False),
+        (SdpFlow("239.100.0.1", 20000), SdpFlow("239.100.0.2", 20000), True),
+        (SdpFlow("192.0.2.10", 5004), SdpFlow("192.0.2.11", 5004), False),
+        (SdpFlow("ff3e::8000:1", 20000), SdpFlow("ff3e::8000:2", 20000), True),
+    ],
+)
+def test_an_emitted_dup_offer_parses_back_to_the_two_legs_it_described(
+    first: SdpFlow, second: SdpFlow, any_source: bool
+):
+    """The additional property, not the evidence: reader and writer agree."""
+    text = format_dup_sdp(first, second, _VIDEO, any_source=any_source)
+    assert parse_dup_sdp(text) == (first, second)

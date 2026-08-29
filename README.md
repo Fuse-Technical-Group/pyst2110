@@ -74,6 +74,23 @@ the caller's to set — it defaults to `2110TPN`. A multicast `flow` names
 its sender or passes `any_source=True`; see §spec:sdp for why that is a
 choice rather than a default.
 
+An ST 2022-7 redundant pair is one offer and not two. `format_dup_sdp`
+writes RFC 7104's grouping — a session-level `a=group:DUP` over two
+`m=video` blocks, each with its own address and sender — and
+`parse_dup_sdp` reads both legs back, in the order the group names them:
+
+```python
+from pyst2110 import format_dup_sdp, parse_dup_sdp
+
+offer = format_dup_sdp(red, blue, video, session_name="my sender")
+first, second = parse_dup_sdp(offer)
+```
+
+A document whose `DUP` tags and media blocks disagree is refused rather
+than read as a single-leg offer, and `parse_sdp` refuses a grouped offer
+for the same reason: a sender that emitted one leg where two were meant
+sends unprotected essence and reports success.
+
 `session_name` defaults to the single space RFC 4566 section 5.3 prescribes
 for a session with no meaningful name — and at least one transmit SDK refuses
 it, so name the session where a sender will read the offer back. NVIDIA
@@ -93,11 +110,12 @@ queueing two frames at once copies the first.
 Everything is re-exported from the top-level package, and the
 docstrings there are the authority; `help(pyst2110)` is the index.
 
-Both paths are built: SDP parsing and emit, the RFC 3550 header parse,
-format geometry, sequence and frame tracking, RFC 4175 payload
-descriptors, the transmit header block, and the ST 2110-21 timing model —
-read schedules, sender limits, and the two leaky buckets that judge a
-capture's emission instants. What is not built is listed in
+Both paths are built: SDP parsing and emit — the single-leg offer and the
+ST 2022-7 pair — the RFC 3550 header parse, format geometry, sequence and
+frame tracking, RFC 4175 payload descriptors, the transmit header block,
+the ST 2022-7 reconstruction of one flow from two legs, and the ST 2110-21
+timing model — read schedules, sender limits, and the two leaky buckets
+that judge a capture's emission instants. What is not built is listed in
 [ROADMAP.md](ROADMAP.md).
 
 ## Development

@@ -35,7 +35,9 @@ from pyst2110.sdp import SENDER_TYPES as SENDER_TYPES
 from pyst2110.sdp import STANDARD_UDP_SIZE_LIMIT as STANDARD_UDP_SIZE_LIMIT
 from pyst2110.sdp import SdpFlow as SdpFlow
 from pyst2110.sdp import SdpVideo as SdpVideo
+from pyst2110.sdp import format_dup_sdp as format_dup_sdp
 from pyst2110.sdp import format_sdp as format_sdp
+from pyst2110.sdp import parse_dup_sdp as parse_dup_sdp
 from pyst2110.sdp import parse_sdp as parse_sdp
 from pyst2110.sdp import parse_video_format as parse_video_format
 from pyst2110.timing import Limits as Limits
@@ -79,6 +81,7 @@ __all__ = [
     "c_inst",
     "choose_payload_size",
     "fits_raster",
+    "format_dup_sdp",
     "format_sdp",
     "frame_boundaries",
     "frame_starts",
@@ -87,6 +90,7 @@ __all__ = [
     "measure",
     "packets_per_frame",
     "packets_per_line",
+    "parse_dup_sdp",
     "parse_payload_headers",
     "parse_rtp",
     "parse_sdp",
