@@ -235,7 +235,22 @@ class SequenceTracker:
             return
 
         steps = self._steps(landed, previous)
-        self.discontinuities += int(np.count_nonzero(steps != 1))
+        broken = int(np.count_nonzero(steps != 1))
+        if not broken:
+            # **A chunk that stepped by one throughout has a closed form.**
+            # Nothing was discontinuous, duplicated, reordered or resynced —
+            # each of those counts a step that is not one — and the extended
+            # numbers are the run `previous + 1 .. previous + landed.size`, so
+            # the span's ends are its ends. The general path would reach the
+            # same three assignments through five more passes over the chunk
+            # and a cumulative sum, which is the ordinary case paying for the
+            # exceptional one (§spec:interface-shape).
+            last = previous + int(landed.size)
+            self._lowest = min(self._lowest, previous + 1)
+            self._highest = max(self._highest, last)
+            self._extended = last
+            return
+        self.discontinuities += broken
         self.duplicated += int(np.count_nonzero(steps == 0))
         backward = steps >= self._space - _MAX_MISORDER
         self.reordered += int(np.count_nonzero(backward))

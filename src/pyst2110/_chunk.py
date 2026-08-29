@@ -14,6 +14,7 @@ import numpy as np
 from numpy.typing import ArrayLike, DTypeLike, NDArray
 
 _U16_SIZE = 2
+_U32_SIZE = 4
 
 
 def per_packet(
@@ -122,4 +123,24 @@ def u16_view(packets: NDArray[np.uint8]) -> NDArray[np.uint16] | None:
     if packets.shape[1] % _U16_SIZE != 0 or not packets.flags["C_CONTIGUOUS"]:
         return None
     view: NDArray[np.uint16] = packets.view(">u2")
+    return view
+
+
+def u32_view(packets: NDArray[np.uint8]) -> NDArray[np.uint32] | None:
+    """The whole chunk as big-endian 32-bit words, or ``None`` if it cannot be.
+
+    The same reinterpretation :func:`u16_view` makes, one width up, for the
+    fields that are thirty-two bits on the wire — the RTP timestamp and the
+    SSRC. Reading one as two sixteen-bit columns joined in place costs a
+    widen, a shift and an or over the chunk; reading it as one column costs a
+    strided copy and nothing else.
+
+    A stricter guard than the sixteen-bit one, and it has to be: a stride that
+    is a multiple of two but not of four reinterprets to a shape numpy
+    refuses, so it takes the sixteen-bit path instead. The chunk's own base is
+    numpy's to align.
+    """
+    if packets.shape[1] % _U32_SIZE != 0 or not packets.flags["C_CONTIGUOUS"]:
+        return None
+    view: NDArray[np.uint32] = packets.view(">u4")
     return view

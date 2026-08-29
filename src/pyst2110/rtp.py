@@ -117,6 +117,10 @@ def _conforming(
     words = _chunk.u16_view(packets)
     if words is None or (packets[:, 0] != _layout.VERSION_2).any():
         return None
+    # The two thirty-two-bit fields as one column each where the stride allows
+    # it, and as their halves joined otherwise: a stride that is even but not
+    # a multiple of four has no such view (:func:`pyst2110._chunk.u32_view`).
+    quads = _chunk.u32_view(packets)
 
     # The marker tops its octet and the field flags top their words, so a
     # comparison against the flag reads the bit in one pass where a mask and
@@ -130,10 +134,25 @@ def _conforming(
         marker=(types >= _layout.MARKER_MASK),
         payload_type=(types & _PAYLOAD_TYPE_MASK),
         sequence=words[:, _SEQUENCE_WORD].astype(np.uint16),
-        timestamp=_joined_u32(words, _TIMESTAMP_WORD),
-        ssrc=_joined_u32(words, _SSRC_WORD),
+        timestamp=_read_u32(words, quads, _TIMESTAMP_WORD),
+        ssrc=_read_u32(words, quads, _SSRC_WORD),
         payload_offset=np.full(count, FIXED_HEADER_SIZE, dtype=np.int64),
     )
+
+
+def _read_u32(
+    words: NDArray[np.uint16], quads: NDArray[np.uint32] | None, high: int
+) -> NDArray[np.uint32]:
+    """A thirty-two-bit field, as one column where the chunk has a
+    thirty-two-bit view and as two joined halves where it has not.
+
+    The whole-word read is a strided copy and nothing else; the joined one
+    widens, shifts and ors over the chunk. Both produce the same array, which
+    the equality gate holds them to (§spec:conforming-fast-path).
+    """
+    if quads is not None:
+        return quads[:, high // 2].astype(np.uint32, copy=False)
+    return _joined_u32(words, high)
 
 
 def _joined_u32(words: NDArray[np.uint16], high: int) -> NDArray[np.uint32]:
