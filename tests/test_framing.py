@@ -404,3 +404,42 @@ def test_the_tracker_takes_the_widths_the_parses_report():
     assert tracker.received == 4
     assert tracker.lost == 0
     assert tracker.discontinuities == 0
+
+
+def test_a_gapless_chunk_lands_where_the_general_walk_would():
+    """A chunk stepping by one throughout takes a closed form rather than the
+    cumulative sum, and the two have to agree on every public number.
+
+    The comparison is the same stream split differently. One call and several
+    calls both take the closed form, but the several-call run carries the
+    straddling step between chunks through the same arithmetic a gap would —
+    so if the closed form got the span's ends or its running total wrong, the
+    two would part.
+    """
+    whole = SequenceTracker()
+    whole.observe(np.arange(4096, dtype=np.int64) % 65536)
+
+    split = SequenceTracker()
+    for start in range(0, 4096, 337):  # a stride that divides nothing
+        split.observe(np.arange(start, min(start + 337, 4096), dtype=np.int64) % 65536)
+
+    assert whole.expected == split.expected == 4096
+    assert whole.lost == split.lost == 0
+    for counter in ("discontinuities", "duplicated", "reordered", "resyncs"):
+        assert getattr(whole, counter) == getattr(split, counter) == 0, counter
+    assert whole.summary() == split.summary()
+
+
+def test_one_broken_step_takes_the_general_walk_and_still_counts():
+    """The closed form is only for a chunk that stepped by one throughout: a
+    single gap in the middle puts the whole chunk back on the general walk,
+    and the counts are the general walk's."""
+    numbers = np.concatenate(
+        [np.arange(0, 100, dtype=np.int64), np.arange(105, 200, dtype=np.int64)]
+    )
+    tracker = SequenceTracker()
+    tracker.observe(numbers)
+
+    assert tracker.discontinuities == 1
+    assert tracker.lost == 5
+    assert tracker.expected == 200
