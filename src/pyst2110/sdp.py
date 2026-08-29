@@ -8,6 +8,10 @@ a transmitter is configured by one it produces.
 An offer carries the required media type parameters of two documents:
 ST 2110-20 section 7.2 and the ``TP`` of ST 2110-21 section 8.1.
 
+A redundant pair is one offer and not two. RFC 7104 groups the two legs of
+ST 2022-7 with a session-level ``a=group:DUP``, and :func:`parse_dup_sdp` and
+:func:`format_dup_sdp` are that document both ways (§spec:redundancy).
+
 Colorimetry is carried through, not interpreted: what a consumer does with
 ``BT2020`` is its own concern, and this records which token the SDP said.
 """
@@ -16,6 +20,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -30,7 +35,9 @@ __all__ = [
     "STANDARD_UDP_SIZE_LIMIT",
     "SdpFlow",
     "SdpVideo",
+    "format_dup_sdp",
     "format_sdp",
+    "parse_dup_sdp",
     "parse_sdp",
     "parse_video_format",
 ]
@@ -100,6 +107,22 @@ _MAX_SESSION_ID = (1 << 64) - 1
 # half-float and not modelled here (§road:future).
 _DEPTHS = (8, 10, 12, 16)
 
+# RFC 7104 section 5: the grouping semantics that mean one stream sent twice,
+# carried on the ``a=group:`` attribute RFC 5888 defines. Other semantics —
+# LS, FID — ride the same attribute and mean other things.
+_DUP = "DUP"
+
+# ST 2022-7 sends one essence by two paths, and two is what this library
+# models throughout: pyst2110.redundancy reconstructs a pair, and Rivermax
+# caps RMX_MAX_DUP_STREAMS at two. A group naming three legs describes a
+# document nothing downstream of the parse can take.
+_DUP_LEGS = 2
+
+# The identification tags a written offer gives its two blocks. RFC 5888
+# leaves the value a token of the document's own choosing, and RFC 5888's own
+# examples number them; nothing outside the document reads them.
+_DUP_TAGS = ("1", "2")
+
 # Every character ``str.splitlines()`` starts a new line at. RFC 4566 ends a
 # record with CRLF alone, but a reader that splits the document into lines —
 # as :func:`parse_sdp` does — begins a record at any of these, so a caller's
@@ -159,41 +182,217 @@ def parse_sdp(text: str) -> SdpFlow:
     source filter (``a=source-filter``). Raises ``ValueError`` naming what is
     missing, because an SDP that cannot describe a flow is the caller's
     problem to fix rather than something to guess at.
-    """
-    destination_ip = ""
-    destination_port = 0
-    source_ip = ""
 
-    # Scoped to the first video section, not last-wins over the document.
-    # RFC 4566: a media section's own attributes override the session-level
-    # ones "for the respective media", so a 2110 SDP carrying video then
-    # audio would otherwise yield the audio port — and a flow attached to it
-    # receives nothing.
-    in_video = False
-    seen_video = False
+    One flow, so a document RFC 7104 grouped into a redundant pair is refused
+    rather than answered with whichever leg came first: a caller reading a
+    destination out of a two-leg offer this way joins — or sends — one leg of
+    two and reports success (§spec:redundancy). :func:`parse_dup_sdp` reads
+    that document. Nothing else changes what an offer without the group means,
+    the ``20000/2`` port count RFC 4566 permits included.
+    """
+    session, media = _sections(text)
+    if _dup_tags(session) is not None:
+        raise ValueError(
+            "the SDP groups its media into an RFC 7104 redundant pair with a "
+            "session-level 'a=group:DUP' line, which is two flows and not one: "
+            "parse_dup_sdp reads both legs"
+        )
+
+    videos = _video_sections(session, media)
+    if not videos:
+        raise ValueError("the SDP has no 'm=video <port> ...' media section")
+
+    # The first video section, not last-wins over the document: a 2110 SDP
+    # carrying video then audio would otherwise yield the audio port, and a
+    # flow attached to it receives nothing.
+    video = videos[0]
+    if not video.connection:
+        raise ValueError("the SDP has no 'c=IN IP4 <address>' connection line")
+    if not video.port:
+        raise ValueError("the SDP's video section declares port 0, which disables it")
+    return SdpFlow(video.connection, video.port, video.source)
+
+
+def parse_dup_sdp(text: str) -> tuple[SdpFlow, SdpFlow]:
+    """Extract both legs of an ST 2022-7 redundant pair from one offer.
+
+    RFC 7104 groups the legs with a session-level ``a=group:DUP`` naming the
+    ``a=mid:`` tags of two ``m=video`` blocks, each block carrying its own
+    ``c=`` and ``a=source-filter``. **The legs come back in the order the
+    group names them**, not in the order the blocks appear: that order is what
+    decides which leg is which everywhere downstream (§spec:redundancy).
+
+    A document whose tags and media blocks disagree is refused. Read as a
+    single-leg offer with an oddity it would put one leg on the wire where two
+    were meant, which is unprotected essence sent and success reported — the
+    silent failure a refusal here is for. Rivermax's
+    ``rmx_output_media_set_sdp`` states the same rule from the other side: the
+    count of ``DUP`` tags has to correspond to the count of ``m=video``
+    blocks.
+
+    Raises ``ValueError`` naming what disagrees, and for an offer carrying no
+    group at all — that is a single-leg document, which :func:`parse_sdp`
+    reads.
+    """
+    session, media = _sections(text)
+    tags = _dup_tags(session)
+    if tags is None:
+        raise ValueError(
+            "the SDP has no session-level 'a=group:DUP <tag> <tag>' line, so "
+            "it describes one leg and not a redundant pair: parse_sdp reads it"
+        )
+
+    sections = _video_sections(session, media)
+    if len(tags) != len(sections):
+        raise ValueError(
+            f"the SDP's 'a=group:DUP' names {len(tags)} tags over "
+            f"{len(sections)} 'm=video' blocks, and RFC 7104 groups one block "
+            f"per tag: a document that says two things about how many legs it "
+            f"has is one a sender puts one leg of on the wire"
+        )
+    if len(tags) != _DUP_LEGS:
+        raise ValueError(
+            f"the SDP's 'a=group:DUP' names {len(tags)} legs; ST 2022-7 as "
+            f"this library models it is two, which is also all Rivermax's "
+            f"RMX_MAX_DUP_STREAMS carries"
+        )
+
+    if len(set(tags)) != len(tags):
+        raise ValueError(
+            f"the SDP's 'a=group:DUP' names {' '.join(tags)}, which is one "
+            f"block twice and so one path rather than two"
+        )
+    blocks: dict[str, _MediaSection] = {}
+    for section in sections:
+        if section.mid in blocks:
+            raise ValueError(
+                f"two of the SDP's 'm=video' blocks carry 'a=mid:"
+                f"{section.mid}', so a tag naming that block names both"
+            )
+        blocks[section.mid] = section
+
+    legs = []
+    for tag in tags:
+        if tag not in blocks:
+            raise ValueError(
+                f"the SDP's 'a=group:DUP' names {tag!r}, which no 'm=video' "
+                f"block carries an 'a=mid:' for"
+            )
+        legs.append(_flow(blocks[tag], tag))
+    first, second = legs
+
+    # The reader refuses what the writer refuses. Two blocks that name one
+    # socket are one path described twice, and a receiver provisioned from
+    # them joins the same group twice while its operator is told the essence
+    # is protected — so disrupting the one path blacks it. Whole-flow
+    # equality is the test rather than the address alone, because two legs
+    # onto one group from different senders are a source-specific pair and
+    # genuinely two paths (§spec:redundancy).
+    if first == second:
+        raise ValueError(
+            f"both of the SDP's legs name {first.destination_ip} port "
+            f"{first.destination_port} and the same sender, which is one path "
+            f"described twice rather than the two ST 2022-7 protects with"
+        )
+    return first, second
+
+
+def _flow(section: _MediaSection, tag: str) -> SdpFlow:
+    """One leg's flow, refusing a block that does not describe one."""
+    if not section.connection:
+        raise ValueError(f"the SDP's {tag!r} block has no connection address")
+    if not section.port:
+        raise ValueError(f"the SDP's {tag!r} block declares port 0, which disables it")
+    return SdpFlow(section.connection, section.port, section.source)
+
+
+@dataclass(frozen=True)
+class _MediaSection:
+    """One ``m=video`` block, with whatever it inherits from the session."""
+
+    port: int
+    connection: str
+    source: str
+    mid: str
+
+
+def _sections(text: str) -> tuple[list[str], list[list[str]]]:
+    """A document's session-level lines and its media sections.
+
+    RFC 4566 section 5: everything before the first ``m=`` is session level,
+    and every line after one belongs to that media section until the next.
+    """
+    session: list[str] = []
+    media: list[list[str]] = []
     for raw in text.splitlines():
         line = raw.strip()
         if line.startswith("m="):
-            if seen_video:
-                break  # a later section cannot override the one we took
-            in_video = line[len("m=") :].split()[:1] == ["video"]
-            if in_video:
-                seen_video = True
-                destination_port = _media_port(line)
-            continue
-        if line.startswith("c=") and (in_video or not seen_video):
-            # Session-level c= applies until a media section supplies its own.
-            destination_ip = _connection_address(line)
-        elif line.startswith("a=source-filter") and (in_video or not seen_video):
-            source_ip = _source_address(line)
+            media.append([line])
+        elif media:
+            media[-1].append(line)
+        else:
+            session.append(line)
+    return session, media
 
-    if not destination_ip:
-        raise ValueError("the SDP has no 'c=IN IP4 <address>' connection line")
-    if not seen_video:
-        raise ValueError("the SDP has no 'm=video <port> ...' media section")
-    if not destination_port:
-        raise ValueError("the SDP's video section declares port 0, which disables it")
-    return SdpFlow(destination_ip, destination_port, source_ip)
+
+def _video_sections(session: list[str], media: list[list[str]]) -> list[_MediaSection]:
+    """Every ``m=video`` block, in document order.
+
+    A media section's own attributes override the session-level ones "for the
+    respective media" (RFC 4566 section 5.7), so a block without a ``c=`` of
+    its own takes the session's — which is how RFC 7104's first example is
+    written, one group address for both legs.
+    """
+    connection = _attribute(session, "c=", _connection_address)
+    source = _attribute(session, "a=source-filter", _source_address)
+    return [
+        _MediaSection(
+            port=_media_port(block[0]),
+            connection=_attribute(block, "c=", _connection_address) or connection,
+            source=_attribute(block, "a=source-filter", _source_address) or source,
+            mid=_attribute(block, "a=mid:", _mid),
+        )
+        for block in media
+        if _is_video(block[0])
+    ]
+
+
+def _is_video(line: str) -> bool:
+    """``m=video 20000 RTP/AVP 96`` — whether this media line opens video.
+
+    One definition, because every reader here scopes itself to the video
+    section and a media type read three ways is a media type two of them can
+    get wrong.
+    """
+    return line[len("m=") :].split()[:1] == ["video"]
+
+
+def _attribute(lines: list[str], prefix: str, read: Callable[[str], str]) -> str:
+    """The last line with this prefix, read — or the empty string for none."""
+    values = [read(line) for line in lines if line.startswith(prefix)]
+    return values[-1] if values else ""
+
+
+def _mid(line: str) -> str:
+    """``a=mid:S1a`` — RFC 5888's identification tag for a media section."""
+    return line[len("a=mid:") :].strip()
+
+
+def _dup_tags(session: list[str]) -> tuple[str, ...] | None:
+    """The tags an ``a=group:DUP`` names, or ``None`` where none does.
+
+    RFC 5888 makes ``a=group:`` a session-level attribute carrying semantics
+    and then identification tags, and RFC 7104 section 5 defines ``DUP`` as
+    the semantics for duplication. Another semantics on the same attribute —
+    ``LS``, ``FID`` — is somebody else's grouping and not this one.
+    """
+    for line in session:
+        if not line.startswith("a=group:"):
+            continue
+        fields = line[len("a=group:") :].split()
+        if fields[:1] == [_DUP]:
+            return tuple(fields[1:])
+    return None
 
 
 def _connection_address(line: str) -> str:
@@ -322,7 +521,7 @@ def _format_parameters(text: str) -> dict[str, str]:
         if line.startswith("m="):
             if in_video:
                 break  # past the video section; a later fmtp is another media
-            in_video = line[len("m=") :].split()[:1] == ["video"]
+            in_video = _is_video(line)
             continue
         if not in_video or not line.startswith("a=fmtp:"):
             continue
@@ -450,52 +649,150 @@ def format_sdp(
     not model, and inventing either would describe a synchronisation the
     sender has not actually got. A caller that owns the clock appends them.
     """
-    destination = _address(flow.destination_ip, "destination")
-    origin = _address(flow.source_ip, "source") if flow.source_ip else None
-    _integer(flow.destination_port, "port", 1, _MAX_PORT)
+    return _offer(
+        (flow,),
+        video,
+        payload_type=payload_type,
+        sender_type=sender_type,
+        any_source=any_source,
+        session_name=session_name,
+        session_id=session_id,
+        ttl=ttl,
+    )
+
+
+def format_dup_sdp(
+    first: SdpFlow,
+    second: SdpFlow,
+    video: SdpVideo,
+    *,
+    payload_type: int = _DEFAULT_PAYLOAD_TYPE,
+    sender_type: str | None = None,
+    any_source: bool = False,
+    session_name: str = " ",
+    session_id: int = 0,
+    ttl: int = 64,
+) -> str:
+    """Write the one offer that describes both legs of an ST 2022-7 pair.
+
+    :func:`format_sdp`'s document with RFC 7104's grouping over it: a
+    session-level ``a=group:DUP`` naming an ``a=mid:`` tag per leg, and a
+    ``m=video`` block per leg carrying its own ``c=`` and ``a=source-filter``.
+    Both blocks carry the same format, two paths being one essence, and the
+    ``o=`` line names the first leg's sender. Every keyword means what it does
+    for a single-leg offer and applies to both legs.
+
+    The legs are written in the order they are passed, and :func:`parse_dup_sdp`
+    reads them back in that order (§spec:redundancy).
+
+    Two legs that name one destination, port and sender are one path written
+    twice, and are refused: an offer claiming a protection the sender has not
+    got is the same silent failure the parse refuses in the other direction.
+    Legs sharing a group but not a sender are a pair — source-specific
+    multicast is two paths onto one address.
+    """
+    return _offer(
+        (first, second),
+        video,
+        payload_type=payload_type,
+        sender_type=sender_type,
+        any_source=any_source,
+        session_name=session_name,
+        session_id=session_id,
+        ttl=ttl,
+    )
+
+
+def _offer(
+    flows: Sequence[SdpFlow],
+    video: SdpVideo,
+    *,
+    payload_type: int,
+    sender_type: str | None,
+    any_source: bool,
+    session_name: str,
+    session_id: int,
+    ttl: int,
+) -> str:
+    """The offer one or two flows share, validated before a line is written.
+
+    One writer for both, because a single-leg offer and one leg of a pair are
+    the same media section under the same rules: two copies of them are two
+    chances to disagree.
+    """
+    destinations = [_address(flow.destination_ip, "destination") for flow in flows]
+    origins = [
+        _address(flow.source_ip, "source") if flow.source_ip else None for flow in flows
+    ]
+    for flow in flows:
+        _integer(flow.destination_port, "port", 1, _MAX_PORT)
     validate_payload_type(payload_type)
     _integer(ttl, "TTL", 0, _MAX_TTL)
     _integer(session_id, "session id", 0, _MAX_SESSION_ID)
     if _LINE_TERMINATORS.intersection(session_name):
         raise ValueError("a session name cannot carry a line terminator")
-    if origin is not None and origin.version != destination.version:
+    for destination, origin in zip(destinations, origins, strict=True):
+        if origin is not None and origin.version != destination.version:
+            raise ValueError(
+                f"the sender {origin} and the destination {destination} are in "
+                f"different address families, which no flow is: RFC 4570 permits "
+                f"the '*' address type only where the destination is an FQDN, so "
+                f"a filter over both has no spelling"
+            )
+        if origin is not None and any_source:
+            raise ValueError(
+                f"the flow names {origin} as its sender and any_source offers the "
+                f"group to every sender; the offer cannot say both"
+            )
+        if origin is None and destination.is_multicast and not any_source:
+            raise ValueError(
+                f"a multicast offer for {destination} names no sender: set "
+                f"SdpFlow.source_ip to the sender's address, which ST 2110-10 "
+                f"section 8.4 asks a sender to signal, or pass any_source=True to "
+                f"offer the group to any sender"
+            )
+    if len(set(flows)) != len(flows):
         raise ValueError(
-            f"the sender {origin} and the destination {destination} are in "
-            f"different address families, which no flow is: RFC 4570 permits "
-            f"the '*' address type only where the destination is an FQDN, so "
-            f"a filter over both has no spelling"
-        )
-    if origin is not None and any_source:
-        raise ValueError(
-            f"the flow names {origin} as its sender and any_source offers the "
-            f"group to every sender; the offer cannot say both"
-        )
-    if origin is None and destination.is_multicast and not any_source:
-        raise ValueError(
-            f"a multicast offer for {destination} names no sender: set "
-            f"SdpFlow.source_ip to the sender's address, which ST 2110-10 "
-            f"section 8.4 asks a sender to signal, or pass any_source=True to "
-            f"offer the group to any sender"
+            f"both legs name {flows[0].destination_ip} port "
+            f"{flows[0].destination_port} and the same sender, which is one "
+            f"leg written twice rather than the two paths ST 2022-7 protects "
+            f"with"
         )
 
-    # RFC 4566 section 5.7: an IPv4 multicast address "MUST also have a time
-    # to live (TTL) value present", and for IPv6 it "MUST NOT be present".
-    scope = f"/{ttl}" if destination.version == 4 and destination.is_multicast else ""
-    host = str(origin) if origin else _unspecified_host(destination)
+    parameters = _media_type_parameters(video, sender_type)
+    origin = origins[0]
+    host = str(origin) if origin else _unspecified_host(destinations[0])
     lines = [
         "v=0",
-        f"o=- {session_id} {session_id} IN {_addrtype(origin or destination)} {host}",
+        f"o=- {session_id} {session_id} IN {_addrtype(origin or destinations[0])} "
+        f"{host}",
         f"s={session_name}",
         "t=0 0",
-        f"m=video {flow.destination_port} RTP/AVP {payload_type}",
-        f"c=IN {_addrtype(destination)} {destination}{scope}",
     ]
-    if origin is not None:
-        lines.append(
-            f"a=source-filter: incl IN {_addrtype(destination)} {destination} {origin}"
+    redundant = len(flows) > 1
+    tags = _DUP_TAGS if redundant else ("",)
+    if redundant:
+        lines.append(f"a=group:{_DUP} {' '.join(tags)}")
+    for flow, destination, leg_origin, tag in zip(
+        flows, destinations, origins, tags, strict=True
+    ):
+        # RFC 4566 section 5.7: an IPv4 multicast address "MUST also have a
+        # time to live (TTL) value present", and for IPv6 it "MUST NOT be
+        # present".
+        scope = (
+            f"/{ttl}" if destination.version == 4 and destination.is_multicast else ""
         )
-    lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
-    lines.append(f"a=fmtp:{payload_type} {_media_type_parameters(video, sender_type)}")
+        lines.append(f"m=video {flow.destination_port} RTP/AVP {payload_type}")
+        lines.append(f"c=IN {_addrtype(destination)} {destination}{scope}")
+        if leg_origin is not None:
+            lines.append(
+                f"a=source-filter: incl IN {_addrtype(destination)} "
+                f"{destination} {leg_origin}"
+            )
+        if tag:
+            lines.append(f"a=mid:{tag}")
+        lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
+        lines.append(f"a=fmtp:{payload_type} {parameters}")
     return "".join(f"{line}\r\n" for line in lines)
 
 

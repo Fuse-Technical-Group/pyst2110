@@ -24,6 +24,8 @@ from pyst2110.geometry import rows_per_field as rows_per_field
 from pyst2110.geometry import sample_offset as sample_offset
 from pyst2110.payload import PayloadHeaders as PayloadHeaders
 from pyst2110.payload import parse_payload_headers as parse_payload_headers
+from pyst2110.redundancy import LegPair as LegPair
+from pyst2110.redundancy import reconstruct as reconstruct
 from pyst2110.rtp import FIXED_HEADER_SIZE as FIXED_HEADER_SIZE
 from pyst2110.rtp import RtpHeaders as RtpHeaders
 from pyst2110.rtp import parse_rtp as parse_rtp
@@ -35,7 +37,9 @@ from pyst2110.sdp import SENDER_TYPES as SENDER_TYPES
 from pyst2110.sdp import STANDARD_UDP_SIZE_LIMIT as STANDARD_UDP_SIZE_LIMIT
 from pyst2110.sdp import SdpFlow as SdpFlow
 from pyst2110.sdp import SdpVideo as SdpVideo
+from pyst2110.sdp import format_dup_sdp as format_dup_sdp
 from pyst2110.sdp import format_sdp as format_sdp
+from pyst2110.sdp import parse_dup_sdp as parse_dup_sdp
 from pyst2110.sdp import parse_sdp as parse_sdp
 from pyst2110.sdp import parse_video_format as parse_video_format
 from pyst2110.timing import Limits as Limits
@@ -66,6 +70,7 @@ __all__ = [
     "UDP_HEADER_SIZE",
     "FrameHeaders",
     "FrameTracker",
+    "LegPair",
     "Limits",
     "Measurement",
     "PayloadHeaders",
@@ -79,6 +84,7 @@ __all__ = [
     "c_inst",
     "choose_payload_size",
     "fits_raster",
+    "format_dup_sdp",
     "format_sdp",
     "frame_boundaries",
     "frame_starts",
@@ -87,6 +93,7 @@ __all__ = [
     "measure",
     "packets_per_frame",
     "packets_per_line",
+    "parse_dup_sdp",
     "parse_payload_headers",
     "parse_rtp",
     "parse_sdp",
@@ -95,6 +102,7 @@ __all__ = [
     "raster_offset",
     "read_schedule",
     "read_times",
+    "reconstruct",
     "rows_per_field",
     "sample_offset",
     "sender_limits",
