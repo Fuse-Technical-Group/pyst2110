@@ -80,6 +80,16 @@ function returning one of these says so in its docstring, beside the shape.
 per packet is the one interface that cannot be made fast later without
 changing every caller.
 
+*Chunk-wide is a floor and not an answer.* An expression over a whole chunk
+can still cost far more than the octets it reads, and the two places that did
+are worth naming because they are different failures. The parse gathered at a
+per-packet offset where the offset was the same number for every packet
+(§spec:conforming-fast-path). `SequenceTracker.observe` — which holds no wire
+format at all, and is here rather than there for that reason — took a modulo
+where both sequence spaces are powers of two and a mask is exact, and copied
+the chunk to prepend the one scalar a straddling step needs. Measured at
+2160p60 and MAXUDP 1460, the tracker went from 0.34 ms a frame to 0.20.
+
 Functions are free where they read, and classes only where state spans
 calls — a sequence tracker carries the last number it saw, a frame
 assembler carries the packets of a frame in progress. Nothing else holds
@@ -208,25 +218,42 @@ words.
 
 The parse therefore takes one of two paths, chosen from the chunk itself:
 
-- The **fast path**, where the chunk carries no CSRC list, no extension bit
-  and no continuation flag. Fields are read at their fixed offsets and stay in
-  their own width — a sixteen-bit field is a sixteen-bit array, promoted only
-  where a caller's arithmetic needs it. Line, sample offset and SRD length are
-  therefore reported as sixteen bits on both paths; byte offsets and the
-  extended sequence number stay wide, being what a gather indexes with and
-  what scales into a raster.
-- The **general path**, unchanged, for every other chunk: a packet carrying a
-  CSRC list, an RTP extension, or more than one segment.
+- The **fast path**, where every packet's flags octet is exactly version two
+  with no padding, no extension and no CSRC list, no first segment sets its
+  continuation flag, and every packet carries a whole header. Fields are read
+  at their fixed offsets in their own width and widened once on the way out.
+- The **general path**, unchanged, for every other chunk: a CSRC list, an RTP
+  extension, more than one segment, a padded packet, a version that is not
+  two, or a packet shorter than a whole header.
 
-*The choice is read, never promised.* A comparison over the flags octet and one
-over the first segment's continuation flag decide it, costing about a
-nanosecond a packet against the hundreds they save. A caller cannot assert
-conformance and an SDP cannot declare it: a sender that changes its
-packetization mid-flow changes the path at the next chunk, and nothing outside
-the bytes is consulted. Two shapes fall back for a reason that is not the
-sender's — an odd stride and a sub-block sliced out of a wider buffer are both
-legitimate chunks that no column slice can read — and they take the general
-path rather than raising.
+*The predicate is the whole octet, not the two bits that move the offset.*
+Padding does not move where a payload begins, so a padded packet could take the
+fast path — but reading the octet whole is one comparison where a mask and a
+test are two, and it settles four fields as constants at the same time. The
+stricter test is therefore the cheaper one, and what it costs is that a padded
+packet — which no ST 2110-20 video sender emits — takes the general path.
+
+*The choice is read, never promised.* Both parses decide from the chunk's own
+bytes: `parse_payload_headers` reads the flags octet for itself rather than
+inferring conformance from the offsets handed to it, because those are a
+caller's array, and the path a chunk takes shall not be a caller's to pick. A sender that
+changes its packetization mid-flow changes the path at the next chunk, and
+nothing outside the bytes is consulted.
+
+Two shapes fall back for a reason that is not the sender's: an odd stride and
+a sub-block sliced out of a wider buffer are legitimate chunks that no column
+slice can reinterpret. They take the general path rather than raising, and
+they are how the suite reaches that path — a gate that stubbed the column read
+out would be comparing the library against something that is not the library.
+
+**Every descriptor is reported wide, whichever path read it.** A sixteen-bit
+field on the wire is not sixteen bits in a consumer's hands: a row is scaled by
+the pgroups in a line and an offset by a pgroup's octets, and under NEP 50 a
+Python multiplier adopts the array's own width rather than widening it. Row
+2159 of a 2160-line raster times 1152 pgroups a line is 2,487,168, which an
+unsigned sixteen-bit array reports as 62,336 — not an error, a different part
+of the picture. The narrow read is the fast path's own business and is widened
+before it is returned, at a cost measured at 1.5 ns a packet.
 
 *Why not the fast path alone*: a CSRC list, an RTP extension and a multi-SRD
 packet are all legal. A library that parsed only the shape it prefers would
@@ -255,12 +282,6 @@ At 2160p60 and MAXUDP 1460 — 17,280 packets a frame — that is 6.23 ms of a
 16.68 ms frame period against 0.52. The consumer that found it was spending
 9.35 ms of that period inside this library and losing about a third of the
 wire to the shortfall.
-
-The same reading applies to `SequenceTracker.observe`, on the same per-chunk
-path and holding no wire format at all: both sequence spaces are powers of
-two, so the modulo that takes a step forward is exactly a mask, and the
-predecessor a straddling step needs is one scalar rather than grounds for
-copying the chunk. 0.34 ms a frame to 0.20.
 
 **Buffer policy: the scratch is the parse's, the returns are the caller's.**
 The cyclic collector is not on this path — numpy arrays are freed by refcount

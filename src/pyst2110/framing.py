@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from pyst2110 import _chunk
+from pyst2110 import _chunk, _layout
 
 __all__ = ["FrameTracker", "SequenceTracker", "frame_boundaries", "frame_starts"]
 
@@ -26,7 +26,7 @@ _SEQUENCE_SPACE = 1 << 16
 
 #: The RFC 4175 extended sequence number is the high half of the count, so
 #: joining the two is a shift of the sixteen bits the RTP field holds.
-_EXTENDED_SHIFT = 16
+_EXTENDED_SHIFT = _layout.U16_BITS
 
 # ST 2110-20 section 6.1.5: an interlaced frame is sent as two fields, so an
 # interlaced flow marks twice per frame.
@@ -239,7 +239,13 @@ class SequenceTracker:
         self.duplicated += int(np.count_nonzero(steps == 0))
         backward = steps >= self._space - _MAX_MISORDER
         self.reordered += int(np.count_nonzero(backward))
-        self._widen(landed, steps, backward, previous)
+        # Signed here, where the counting above has just finished with the
+        # unsigned array — a step read as reordering becomes a small negative
+        # one, which is also what leaves a resync as the only thing still at
+        # or past the dropout bound. Doing it inside :meth:`_widen` would put
+        # that ordering in prose across a method boundary.
+        np.subtract(steps, self._space, out=steps, where=backward)
+        self._widen(landed, steps, previous)
 
     def _steps(self, landed: NDArray[np.int64], previous: int) -> NDArray[np.int64]:
         """Each packet's forward distance from the one before it.
@@ -253,7 +259,7 @@ class SequenceTracker:
         Both sequence spaces are powers of two, so the modulo that takes a
         difference forward is exactly a mask — and a mask over a chunk this
         size is worth the arithmetic identity being written down
-        (§spec:conforming-fast-path).
+        (§spec:interface-shape).
         """
         steps = np.empty(landed.size, dtype=np.int64)
         steps[0] = landed[0] - previous
@@ -262,11 +268,7 @@ class SequenceTracker:
         return steps
 
     def _widen(
-        self,
-        landed: NDArray[np.int64],
-        steps: NDArray[np.int64],
-        backward: NDArray[np.bool_],
-        base: int,
+        self, landed: NDArray[np.int64], steps: NDArray[np.int64], base: int
     ) -> None:
         """Grow the observed span to cover this chunk, unwrapping as it goes.
 
@@ -278,17 +280,16 @@ class SequenceTracker:
         running total by construction, so the walk is over resyncs — normally
         none — and never over packets.
 
-        ``steps`` is signed in place, the caller having finished counting over
-        it. A step read as reordering becomes a small negative one, which is
-        also what leaves a resync as the only thing still at or past the
-        dropout bound.
+        ``steps`` arrives signed: a step read as reordering is already a small
+        negative one, which is what leaves a resync as the only thing still at
+        or past the dropout bound.
 
-        ``base`` is the running extended number the first step leads from —
-        the predecessor the caller already resolved, so the span is not
-        reopened from state this method would have to re-read.
+        ``base`` is the extended number the first step leads from. It is
+        ``self._extended``, which the caller has just resolved or opened — and
+        passing it is what lets this method take an ``int`` where the attribute
+        is ``int | None``, rather than re-narrowing state the caller already
+        narrowed.
         """
-        np.subtract(steps, self._space, out=steps, where=backward)
-
         start = 0
         for cut in [*np.flatnonzero(steps >= self._dropout).tolist(), landed.size]:
             if cut > start:

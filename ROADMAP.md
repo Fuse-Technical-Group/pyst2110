@@ -43,6 +43,34 @@ own bytes, and the two agree field for field under a CI gate
 (§spec:conforming-fast-path). Measured at 360.8 ns a packet against 29.9 on a
 4096-packet chunk — 6.23 ms of a 2160p60 frame period against 0.52.
 
+### What the column read left behind §road:fast-path-second-pass
+
+Take the remaining per-chunk waste the fast path exposed, in
+`src/pyst2110/rtp.py`, `src/pyst2110/payload.py`, `src/pyst2110/framing.py` and
+`src/pyst2110/_chunk.py` (§spec:conforming-fast-path, §spec:interface-shape).
+Measured on a 4096-packet chunk, each independently:
+
+- A thirty-two-bit field read as two sixteen-bit columns, where the chunk views
+  as `>u4` for nothing: `parse_rtp` fast 15.0 to 10.3 ns a packet.
+- `SequenceTracker.observe` has no conforming case of its own — a gapless chunk
+  still makes three bool passes, a masked subtract, a `flatnonzero` and a
+  `cumsum`, where every step being one makes the span update closed-form:
+  50.4 to 15.5 us a chunk.
+- The general path's post-loop work scales with `max_segments` rather than with
+  the segments the loop reached, and materializes a `count x max_segments`
+  index array to mask it down again: 265 to 119 ns a packet.
+- `frame_boundaries` still shifts by one with the `np.concatenate` the tracker
+  stopped using, and `FrameTracker.observe` copies a `cumsum` that is already
+  int64.
+- With no sizes, `limits` fills and scans a 32 KiB constant array so
+  `_conforming` can read one number off it.
+
+**Measure in place, not in isolation.** A reduction that replaced a mask and
+`.any()` on the offset column benchmarked faster alone and made the fast path
+twice as slow in situ — numpy's reduction over a big-endian strided column is
+the unbuffered loop. Every item above is quoted from an isolated measurement
+and shall be re-measured through `tools/parse-benchmark.py` before it lands.
+
 ### Returns the caller borrows §road:fast-path-borrowed-returns
 
 Let a caller hand the parse the arrays to fill, so a steady-state receiver

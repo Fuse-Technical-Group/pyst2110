@@ -472,15 +472,30 @@ def test_the_bound_does_not_change_the_conforming_read(monkeypatch):
         assert result.line.tolist() == [42]
 
 
-def test_the_wire_widths_are_reported_in_their_own_width():
-    """A sixteen-bit field on the wire is a sixteen-bit array here; a caller
-    scaling one into a raster promotes it (§spec:conforming-fast-path). Byte
-    offsets stay wide, being what a gather indexes with."""
+def test_every_descriptor_is_wide_enough_to_scale_into_a_raster():
+    """Sixteen bits on the wire is not sixteen bits in a consumer's hands.
+
+    A descriptor is scaled into a raster the moment it is used — a row times
+    the pgroups in a line, an offset times a pgroup's octets — and under NEP 50
+    a Python multiplier adopts the array's own width rather than widening it.
+    Row 2159 of a 2160-line raster times 1152 pgroups a line is 2,487,168,
+    which an unsigned sixteen-bit array reports as 62,336: not an error, a
+    different part of the picture. So every descriptor is reported wide, and
+    the narrow read the fast path makes is its own business
+    (§spec:conforming-fast-path)."""
     result = parse(_ONE_SRD)
 
-    assert result.length.dtype == np.uint16
-    assert result.line.dtype == np.uint16
-    assert result.offset_samples.dtype == np.uint16
-    assert result.extended_sequence.dtype == np.int64
-    assert result.source.dtype == np.int64
-    assert result.data_offset.dtype == np.int64
+    for name in (
+        "length",
+        "line",
+        "offset_samples",
+        "extended_sequence",
+        "source",
+        "data_offset",
+        "packet",
+        "segments",
+    ):
+        assert getattr(result, name).dtype == np.int64, name
+
+    # The scaling that motivates it, on the widest row ST 2110-20 permits.
+    assert (result.line * 1152).dtype == np.int64

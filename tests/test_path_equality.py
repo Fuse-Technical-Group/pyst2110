@@ -26,7 +26,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from conftest import GeneralPathError, chunk, general_only, watch_paths
+from conftest import GeneralPathError, chunk, watch_paths
+from pyst2110 import _chunk
 from pyst2110 import payload as payload_module
 from pyst2110 import rtp as rtp_module
 from pyst2110.framing import SequenceTracker
@@ -148,14 +149,43 @@ def parse_both(
     """Parse one chunk as the library would, and again with the fast path shut.
 
     Both go through the public entry points, neither of which takes a path
-    argument — the same call twice, with the 16-bit view withheld the second
-    time (§spec:conforming-fast-path).
+    argument — the same call twice, the second over the same octets in a shape
+    the column read declines (§spec:conforming-fast-path).
+
+    *Why not stub the view out*: a gate that reaches the general path by
+    replacing a private function proves the two agree when one of them is not
+    the library. The library already declines a chunk sliced out of a wider
+    buffer, so the second call hands it exactly that — same values, same
+    sizes, same bounds, non-contiguous — and the fallback under test is the
+    one a caller can actually arrive at.
     """
     fast = _parse(rows, sizes, max_segments)
-    with pytest.MonkeyPatch.context() as patch:
-        general_only(patch)
-        general = _parse(rows, sizes, max_segments)
+    wide, bounds = odd_strided(rows, sizes)
+    general = _parse(wide, bounds, max_segments)
     return fast, general
+
+
+def odd_strided(
+    rows: np.ndarray, sizes: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """The same packets in a chunk the column read declines, and their bounds.
+
+    One octet wider, so the stride is odd and
+    :func:`pyst2110._chunk.u16_view` returns ``None`` — the library's own
+    fallback rather than a seam opened for the suite. The sizes go with it
+    because the bound has to stay what it was: a wider stride would otherwise
+    let the general path read an octet the fast path could not, and the two
+    would differ over a chunk neither got wrong.
+
+    (The other fallback, a sub-block of a wider buffer, is not usable here: a
+    one-row slice is still contiguous, and most vectors are one packet.)
+    """
+    packets, stride = rows.shape
+    wide = np.zeros((packets, stride + 1), dtype=rows.dtype)
+    wide[:, :stride] = rows
+    assert _chunk.u16_view(wide) is None, "the fallback needs a real one"
+    bounds = np.full(packets, stride, dtype=np.int64) if sizes is None else sizes
+    return wide, bounds
 
 
 def _parse(
@@ -288,13 +318,26 @@ def test_a_chunk_with_no_packets_agrees():
     assert_paths_agree(np.zeros((0, 20), dtype=np.uint8))
 
 
-def test_a_chunk_that_cannot_be_read_as_words_agrees():
+def test_a_chunk_that_cannot_be_read_as_words_parses_as_the_fast_one_would():
     """An odd stride and a sub-block of a wider buffer both fall back rather
-    than raising, and the fallback has to be the same parse."""
-    assert_paths_agree(chunk(_CONFORMING, _CONFORMING, stride=21))
+    than raising, and what comes back has to be what the column read would
+    have produced from the same octets.
 
-    buffer = chunk(_CONFORMING, _CONFORMING, stride=64)
-    assert_paths_agree(buffer[:, :24])
+    Not :func:`assert_paths_agree`, which would compare the general path with
+    itself here: both of its calls would decline. The comparison is against a
+    contiguous, even-strided copy of the same packets, which does take the
+    fast path.
+    """
+    contiguous = chunk(_CONFORMING, _CONFORMING)
+    expected = _parse(contiguous, None, 3)
+
+    odd = chunk(_CONFORMING, _CONFORMING, stride=21)
+    assert_identical(_parse(odd, None, 3)[0], expected[0])
+    assert_identical(_parse(odd, None, 3)[1], expected[1])
+
+    sliced = chunk(_CONFORMING, _CONFORMING, stride=64)[:, :24]
+    assert_identical(_parse(sliced, None, 3)[0], expected[0])
+    assert_identical(_parse(sliced, None, 3)[1], expected[1])
 
 
 # --- over a capture from real senders -----------------------------------------

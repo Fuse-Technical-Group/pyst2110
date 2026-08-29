@@ -30,9 +30,7 @@ __all__ = ["PACKET_HEADER_SIZE", "UDP_HEADER_SIZE", "FrameHeaders", "max_payload
 
 #: Octets of header a packet carries: the twelve of RFC 3550's fixed header,
 #: two of extended sequence number, and one six-octet SRD header.
-PACKET_HEADER_SIZE = (
-    _layout.FIXED_HEADER_SIZE + _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE
-)
+PACKET_HEADER_SIZE = _layout.CONFORMING_HEADER_SIZE
 
 #: The UDP header, which SMPTE ST 2110-10 section 6.3 counts inside its size
 #: limit: "The UDP Size is reflected in the UDP header, and includes the length
@@ -43,7 +41,7 @@ UDP_HEADER_SIZE = 8
 # sequence number sits directly after the fixed header and the one SRD header
 # after that, and the SRD's own fields are offset from _SRD_BASE.
 _EXTENDED_SEQUENCE = _layout.FIXED_HEADER_SIZE
-_SRD_BASE = _EXTENDED_SEQUENCE + _layout.EXTENDED_SEQUENCE_SIZE
+_SRD_BASE = _layout.SRD_BASE
 
 # ST 2110-20 section 7.2 bounds width and height at 32767, which is what the
 # SRD Row Number and Offset fields hold under their own flag.
@@ -55,7 +53,7 @@ _INT64_MAX = (1 << 63) - 1
 _FIELDS_PER_FRAME = 2
 # ST 2110-20 section 6.1.4: the extended sequence number carries "the 16 high
 # order bits of the extended 32-bit sequence number".
-_HIGH_HALF = 16
+_HIGH_HALF = _layout.U16_BITS
 _LOW_HALF_MASK = _layout.U16_MODULUS - 1
 _OCTET_MASK = 0xFF
 _OCTET_BITS = 8

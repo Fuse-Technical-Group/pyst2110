@@ -35,10 +35,10 @@ _EXTENSION_WORD_SIZE = 4
 
 # Where the fixed header's fields sit in a big-endian 16-bit view of the
 # chunk. The two wide ones take a word each side, high half first.
-_SEQUENCE_WORD = _layout.SEQUENCE // 2
-_TIMESTAMP_WORD = _layout.TIMESTAMP // 2
-_SSRC_WORD = _layout.SSRC // 2
-_HALF_WORD_SHIFT = 16
+_SEQUENCE_WORD = _layout.SEQUENCE_WORD
+_TIMESTAMP_WORD = _layout.TIMESTAMP // _layout.U16_SIZE
+_SSRC_WORD = _layout.SSRC // _layout.U16_SIZE
+_HALF_WORD_SHIFT = _layout.U16_BITS
 # In the field's own width, so masking one does not widen it back again.
 _PAYLOAD_TYPE_MASK = np.uint8(_layout.PAYLOAD_TYPE_MASK)
 

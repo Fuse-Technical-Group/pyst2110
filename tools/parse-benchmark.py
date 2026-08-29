@@ -19,15 +19,14 @@ from __future__ import annotations
 
 import argparse
 import timeit
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import fields
 from fractions import Fraction
 from typing import Any
 
 import numpy as np
 
-from pyst2110 import _chunk, geometry, payload, rtp
+from pyst2110 import geometry, payload, rtp
 from pyst2110.framing import SequenceTracker
 from pyst2110.sdp import SdpVideo
 
@@ -46,6 +45,7 @@ RASTER = SdpVideo(
 _NS_PER_MS = 1_000_000
 _US_PER_S = 1_000_000
 _NS_PER_S = 1_000_000_000
+_MS_PER_S = 1_000
 
 
 def conforming_chunk(count: int, payload_size: int, per_frame: int) -> np.ndarray:
@@ -87,19 +87,19 @@ def _put_u16(block: np.ndarray, octet: int, values: np.ndarray) -> None:
     block[:, octet + 1] = values & 0xFF
 
 
-@contextmanager
-def general_path() -> Iterator[None]:
-    """Force both parses down the general path for the duration.
+def odd_strided(block: np.ndarray) -> np.ndarray:
+    """The same packets in a chunk no column slice can read.
 
-    Withholding the 16-bit view is the one lever: neither fast path runs
-    without it, and both entry points stay exactly the ones a caller uses.
+    One octet wider, so the stride is odd and the parse takes its general
+    path — the library's own fallback, rather than a private function rebound
+    at runtime. The sizes passed alongside keep the bound what it was, so the
+    two paths read the same octets and neither is handed one the other could
+    not reach.
     """
-    original = _chunk.u16_view
-    _chunk.u16_view = lambda packets: None  # type: ignore[assignment]
-    try:
-        yield
-    finally:
-        _chunk.u16_view = original  # type: ignore[assignment]
+    packets, stride = block.shape
+    wide = np.zeros((packets, stride + 1), dtype=block.dtype)
+    wide[:, :stride] = block
+    return wide
 
 
 def agree(block: np.ndarray, sizes: np.ndarray) -> bool:
@@ -110,8 +110,7 @@ def agree(block: np.ndarray, sizes: np.ndarray) -> bool:
     is the gate that says it over every shape.
     """
     fast = _parse(block, sizes)
-    with general_path():
-        general = _parse(block, sizes)
+    general = _parse(odd_strided(block), sizes)
     return all(
         getattr(mine, entry.name).dtype == getattr(theirs, entry.name).dtype
         and np.array_equal(getattr(mine, entry.name), getattr(theirs, entry.name))
@@ -139,7 +138,7 @@ def report(name: str, seconds: float, count: int, per_frame: int) -> None:
         f"  {name:<34}"
         f"{seconds * _US_PER_S:>10.1f}"
         f"{seconds / count * _NS_PER_S:>12.1f}"
-        f"{seconds / count * per_frame * 1000:>11.3f}"
+        f"{seconds / count * per_frame * _MS_PER_S:>11.3f}"
     )
 
 
@@ -155,19 +154,29 @@ def main() -> int:
     block = conforming_chunk(args.packets, size, per_frame)
     sizes = np.full(args.packets, block.shape[1], dtype=np.int64)
 
-    def parse() -> tuple[object, object]:
-        headers = rtp.parse_rtp(block, sizes=sizes)
-        return headers, payload.parse_payload_headers(
-            block, headers.payload_offset, sizes=sizes
-        )
-
+    # The same packets in a chunk the column read declines, so the general
+    # path is reached the way a caller reaches it rather than by rebinding
+    # anything (:func:`odd_strided`).
+    wide = odd_strided(block)
     offsets = rtp.parse_rtp(block, sizes=sizes).payload_offset
+
+    def parse() -> tuple[object, object]:
+        return _parse(block, sizes)
+
+    def parse_general() -> tuple[object, object]:
+        return _parse(wide, sizes)
 
     def read_rtp() -> object:
         return rtp.parse_rtp(block, sizes=sizes)
 
+    def read_rtp_general() -> object:
+        return rtp.parse_rtp(wide, sizes=sizes)
+
     def read_payload() -> object:
         return payload.parse_payload_headers(block, offsets, sizes=sizes)
+
+    def read_payload_general() -> object:
+        return payload.parse_payload_headers(wide, offsets, sizes=sizes)
 
     def track() -> object:
         tracker = SequenceTracker()
@@ -187,14 +196,13 @@ def main() -> int:
     print(f"  {'':<34}{'us/chunk':>10}{'ns/packet':>12}{'ms/frame':>11}")
 
     timings: dict[str, float] = {}
-    for label, work in (
-        ("parse_rtp", read_rtp),
-        ("parse_payload_headers", read_payload),
-        ("both", parse),
+    for label, fast_work, general_work in (
+        ("parse_rtp", read_rtp, read_rtp_general),
+        ("parse_payload_headers", read_payload, read_payload_general),
+        ("both", parse, parse_general),
     ):
-        with general_path():
-            timings[label + ", general"] = fastest(work, args.repeat, args.loops)
-        timings[label + ", fast"] = fastest(work, args.repeat, args.loops)
+        timings[label + ", general"] = fastest(general_work, args.repeat, args.loops)
+        timings[label + ", fast"] = fastest(fast_work, args.repeat, args.loops)
     timings["both + SequenceTracker.observe"] = fastest(track, args.repeat, args.loops)
     for name, seconds in timings.items():
         report(name, seconds, args.packets, per_frame)
