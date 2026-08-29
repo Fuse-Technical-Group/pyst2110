@@ -443,3 +443,53 @@ def test_the_loss_window_is_counted_the_same_from_either_path(
     assert received == rows.shape[0]
     assert lost == 1746  # the outage, exactly as `test_redundancy` measures it
     assert discontinuities == 1
+
+
+# --- over bytes nobody chose ---------------------------------------------------
+
+
+_FLAGS = [0x80, 0x81, 0x82, 0x8F, 0x90, 0xA0, 0xB0, 0xC0, 0x00, 0xFF, 0x20, 0x10]
+_EDGE16 = [0x0000, 0x0001, 0x7FFE, 0x7FFF, 0x8000, 0x8001, 0xFFFE, 0xFFFF]
+
+
+def test_the_paths_agree_over_chunks_nobody_wrote():
+    """Vectors cover the shapes someone thought of; a sender does not.
+
+    The packets that reach this parse are whatever arrives on a multicast
+    group, so the shapes that matter are not the ones written by hand above.
+    These are drawn at random and biased hard toward the edges of every field
+    the selection reads — each flags octet that flips the path, each
+    sixteen-bit field at zero, at its flag bit and at its maximum, packet
+    counts from none to eight, strides from a bare header to three times one,
+    and sizes that truncate a packet below its own header.
+
+    Seeded, so a failure is reproducible and CI does not flake.
+    """
+    rng = np.random.default_rng(20260828)
+
+    for trial in range(400):
+        count = int(rng.integers(0, 9))
+        stride = int(rng.choice([20, 22, 24, 32, 64]))
+        if count:
+            block = rng.integers(0, 256, (count, stride), dtype=np.uint8)
+            block[:, 0] = rng.choice(_FLAGS, count)
+            for column in (14, 16, 18):
+                if column + 1 < stride:
+                    values = rng.choice(_EDGE16, count)
+                    block[:, column] = values >> 8
+                    block[:, column + 1] = values & 0xFF
+        else:
+            block = np.zeros((0, stride), dtype=np.uint8)
+
+        if trial % 3 == 0:
+            sizes = np.full(count, stride, dtype=np.int64)
+        elif trial % 3 == 1:
+            sizes = rng.integers(0, stride + 1, count).astype(np.int64)
+        else:
+            sizes = rng.choice([0, 1, 19, 20, 21, stride], count).astype(np.int64)
+        # Clipped to the real stride: a larger size would bound the two calls
+        # differently once the second chunk is widened, which is this test
+        # reading two chunks rather than two paths.
+        sizes = np.minimum(sizes, stride).astype(np.int64)
+
+        assert_paths_agree(block, sizes)
