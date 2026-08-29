@@ -107,6 +107,21 @@ def test_the_video_section_wins_over_a_later_audio_section():
     assert flow.source_ip == "192.0.2.5"
 
 
+def test_an_earlier_audio_section_does_not_lend_the_video_its_connection():
+    """The mirror of the case above, with the audio section first. Only what
+    precedes the first ``m=`` is session level (RFC 4566 section 5), so an
+    audio block's own ``c=`` is that block's and never the video's — a flow
+    built from it would carry the audio group and receive nothing."""
+    flow = parse_sdp(
+        "c=IN IP4 239.0.0.1\n"
+        "m=audio 20010 RTP/AVP 97\n"
+        "c=IN IP4 239.0.0.2\n"
+        "m=video 20000 RTP/AVP 96\n"
+    )
+    assert flow.destination_ip == "239.0.0.1"
+    assert flow.destination_port == 20000
+
+
 def test_the_video_format_comes_off_the_fmtp_line():
     video = parse_video_format(_ST2110_20)
     assert video.width == 1920

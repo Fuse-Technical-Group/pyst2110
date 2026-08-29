@@ -190,7 +190,7 @@ def parse_sdp(text: str) -> SdpFlow:
     that document. Nothing else changes what an offer without the group means,
     the ``20000/2`` port count RFC 4566 permits included.
     """
-    session, _ = _sections(text)
+    session, media = _sections(text)
     if _dup_tags(session) is not None:
         raise ValueError(
             "the SDP groups its media into an RFC 7104 redundant pair with a "
@@ -198,40 +198,19 @@ def parse_sdp(text: str) -> SdpFlow:
             "parse_dup_sdp reads both legs"
         )
 
-    destination_ip = ""
-    destination_port = 0
-    source_ip = ""
-
-    # Scoped to the first video section, not last-wins over the document.
-    # RFC 4566: a media section's own attributes override the session-level
-    # ones "for the respective media", so a 2110 SDP carrying video then
-    # audio would otherwise yield the audio port — and a flow attached to it
-    # receives nothing.
-    in_video = False
-    seen_video = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if line.startswith("m="):
-            if seen_video:
-                break  # a later section cannot override the one we took
-            in_video = line[len("m=") :].split()[:1] == ["video"]
-            if in_video:
-                seen_video = True
-                destination_port = _media_port(line)
-            continue
-        if line.startswith("c=") and (in_video or not seen_video):
-            # Session-level c= applies until a media section supplies its own.
-            destination_ip = _connection_address(line)
-        elif line.startswith("a=source-filter") and (in_video or not seen_video):
-            source_ip = _source_address(line)
-
-    if not destination_ip:
-        raise ValueError("the SDP has no 'c=IN IP4 <address>' connection line")
-    if not seen_video:
+    videos = _video_sections(session, media)
+    if not videos:
         raise ValueError("the SDP has no 'm=video <port> ...' media section")
-    if not destination_port:
+
+    # The first video section, not last-wins over the document: a 2110 SDP
+    # carrying video then audio would otherwise yield the audio port, and a
+    # flow attached to it receives nothing.
+    video = videos[0]
+    if not video.connection:
+        raise ValueError("the SDP has no 'c=IN IP4 <address>' connection line")
+    if not video.port:
         raise ValueError("the SDP's video section declares port 0, which disables it")
-    return SdpFlow(destination_ip, destination_port, source_ip)
+    return SdpFlow(video.connection, video.port, video.source)
 
 
 def parse_dup_sdp(text: str) -> tuple[SdpFlow, SdpFlow]:
@@ -360,8 +339,18 @@ def _video_sections(session: list[str], media: list[list[str]]) -> list[_MediaSe
             mid=_attribute(block, "a=mid:", _mid),
         )
         for block in media
-        if block[0][len("m=") :].split()[:1] == ["video"]
+        if _is_video(block[0])
     ]
+
+
+def _is_video(line: str) -> bool:
+    """``m=video 20000 RTP/AVP 96`` — whether this media line opens video.
+
+    One definition, because every reader here scopes itself to the video
+    section and a media type read three ways is a media type two of them can
+    get wrong.
+    """
+    return line[len("m=") :].split()[:1] == ["video"]
 
 
 def _attribute(lines: list[str], prefix: str, read: Callable[[str], str]) -> str:
@@ -518,7 +507,7 @@ def _format_parameters(text: str) -> dict[str, str]:
         if line.startswith("m="):
             if in_video:
                 break  # past the video section; a later fmtp is another media
-            in_video = line[len("m=") :].split()[:1] == ["video"]
+            in_video = _is_video(line)
             continue
         if not in_video or not line.startswith("a=fmtp:"):
             continue
