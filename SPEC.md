@@ -183,6 +183,70 @@ arithmetic — the consumer's gather is a kernel over device memory
 (§spec:scope-boundary), where a row past the image writes outside the
 raster rather than raising.
 
+## The conforming fast path §spec:conforming-fast-path
+
+*Status: not started*
+
+Vectorized is not the same as fast, and the difference here is a factor of
+forty. Every parse runs over a whole chunk (§spec:interface-shape), which is
+what §req:priorities asks for and what rules out a per-packet Python object.
+What it does not rule out is a vectorized expression costing far more than the
+data it reads: a chunk's header block at 4096 packets is 80 KiB, and the parse
+takes 1.16 ms over it — about 70 MB/s, three orders below what numpy does with
+80 KiB resident in cache.
+
+**Where the time goes.** The payload offset is per packet, because a CSRC list
+or an RTP header extension moves where the payload begins (§spec:rtp). Reading
+a field at a per-packet offset is a gather: two index arrays, a bounds mask
+and a promotion to sixty-four bits, for every one of the nine reads a segment
+walk makes. Reading the same field at a *uniform* offset is a column slice.
+
+**A conforming ST 2110-20 sender emits neither**, and one SRD a packet at the
+standard datagram size. Every offset in such a chunk is the same number, and
+the whole parse is column slices over the block read as big-endian sixteen-bit
+words.
+
+The parse therefore takes one of two paths, chosen from the chunk itself:
+
+- The **fast path**, where the chunk carries no CSRC list, no extension bit
+  and no continuation flag. Fields are read at their fixed offsets and stay in
+  their own width — a sixteen-bit field is a sixteen-bit array, promoted only
+  where a caller's arithmetic needs it.
+- The **general path**, unchanged, for every other chunk: a packet carrying a
+  CSRC list, an RTP extension, or more than one segment.
+
+*The choice is read, never promised.* Three vector tests over the chunk decide
+it — the flags byte's CSRC count and extension bit, and the first segment's
+continuation flag — costing about a nanosecond a packet against the hundreds
+they save. A caller cannot assert conformance and an SDP cannot declare it: a
+sender that changes its packetization mid-flow changes the path at the next
+chunk, and nothing outside the bytes is consulted.
+
+*Why not the fast path alone*: a CSRC list, an RTP extension and a multi-SRD
+packet are all legal. A library that parsed only the shape it prefers would
+report a line that does not exist rather than a packet it could not read,
+which is the failure §spec:payload-header exists to avoid.
+
+**The two paths agree field for field.** That is a gate rather than a claim:
+the suite parses the same packets both ways and compares every array —
+sequence, marker, extended sequence, segment count, and each segment's length,
+line and offset — over hand-written vectors and over the captures taken off
+real senders alike (§spec:testing). The general path is the reference; where
+the two disagree, the fast path is what is wrong.
+
+**Measured** on a 4096-packet chunk of conforming one-SRD packets: 282.3 ns a
+packet against 7.1. At 2160p60 and MAXUDP 1460 — 17,280 packets a frame —
+that is 4.88 ms of a 16.68 ms frame period against 0.12 ms. The consumer that
+found it was spending 9.35 ms of that period inside this library and losing
+about a third of the wire to the shortfall.
+
+*Why this rather than a compiled extension*: §spec:packaging trades a C
+extension away for portability, against "a speed nothing has yet asked for".
+Something has now asked, and the answer did not need one — what cost the time
+was the gather, not the interpreter. A compiled parse stays available for a
+raster that asks again, and it would arrive as a third path under this same
+equality gate rather than as a replacement for either.
+
 ## Geometry §spec:geometry
 
 *Status: complete*
@@ -610,7 +674,9 @@ A pure-Python package with numpy as its only runtime dependency, published
 under MIT. No build step and no compiled extension: the parses are numpy
 expressions, and a C extension would trade the portability that makes this
 library usable from a capture-analysis script for a speed nothing has yet
-asked for.
+asked for. A consumer has since asked, and the answer was a numpy expression
+that reads the chunk differently rather than a language change
+(§spec:conforming-fast-path) — which is what keeps this true.
 
 *Why publishable at all*: the licence and the absence of vendor content are
 what let this material be public (§spec:scope-boundary), and a library that
