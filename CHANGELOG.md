@@ -1,3 +1,16 @@
+## [0.7.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.7.0...v0.7.1) (2026-08-29)
+
+
+### Bug Fixes
+
+* **parse:** report every descriptor wide, and select from the chunk's bytes ([ec90fb5](https://github.com/Fuse-Technical-Group/pyst2110/commit/ec90fb5f9414927cb2e9eddc7a587a25e798fd65))
+
+
+### Performance Improvements
+
+* **framing:** take the sequence step by mask and slice, not modulo and copy ([d2981fc](https://github.com/Fuse-Technical-Group/pyst2110/commit/d2981fcffcbef848de17f252f0b9ce4c889c8634))
+* **parse:** read a conforming chunk by column instead of by gather ([7fae6b5](https://github.com/Fuse-Technical-Group/pyst2110/commit/7fae6b59a3c28d6c24de91c8f3506af3278f82b5))
+
 # [0.7.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.6.1...v0.7.0) (2026-08-29)
 
 
