@@ -1,3 +1,16 @@
+# [0.7.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.6.1...v0.7.0) (2026-08-29)
+
+
+### Bug Fixes
+
+* **api:** re-export the ST 2022-7 reconstruction from the package root ([4aec630](https://github.com/Fuse-Technical-Group/pyst2110/commit/4aec630b0534e996b9b6788925cc0bf4fba2c3ad))
+* **sdp:** refuse a pair whose two legs describe one path ([0d7d078](https://github.com/Fuse-Technical-Group/pyst2110/commit/0d7d078f535f93655ccb1c1a85d8695dbb09c8b9))
+
+
+### Features
+
+* **sdp:** read and write the duplicated offer of an ST 2022-7 pair ([115b0e4](https://github.com/Fuse-Technical-Group/pyst2110/commit/115b0e431ecf498f76f23e1871796f899db83184))
+
 ## [0.6.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.6.0...v0.6.1) (2026-08-28)
 
 
