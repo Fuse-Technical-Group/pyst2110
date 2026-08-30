@@ -730,7 +730,7 @@ def test_withholding_the_buffer_never_reaches_the_second_pass(monkeypatch):
     ]
 
 
-# --- a ConvertIP-shaped chunk (§road:split-segment-subset) --------------------
+# --- a ConvertIP-shaped chunk (§spec:split-segments) --------------------------
 #
 # 1080p60 YCbCr-4:2:2 10-bit: 1920 pixels a line at five octets a two-pixel
 # pgroup is 4800 octets, which the sender's 1320-octet segment does not divide.

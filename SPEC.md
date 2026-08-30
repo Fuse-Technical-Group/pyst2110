@@ -155,8 +155,9 @@ vectorized across every packet at each one, because a Python loop over a
 quarter of a million packets a second is not affordable (§req:priorities).
 ST 2110-20 permits three and RFC 4175 sets no limit, so the bound is the
 caller's with three as the default. A packet still declaring a continuation
-at the bound is flagged rather than trimmed in silence — dropping part of a
-raster without saying so is the failure worth naming.
+at the bound is flagged rather than trimmed in silence, and so is one whose
+next header lies past the end of every buffer offered — dropping part of a
+raster without saying so is the failure worth naming (§spec:split-segments).
 
 The flag is per packet, because the instruction it carries is to discard
 that packet. A chunk-wide count says one packet in four thousand is poison
@@ -195,14 +196,12 @@ raster rather than raising.
 
 ## Segments across a header-data split §spec:split-segments
 
-*Status: not started*
+*Status: complete*
 
 A header-data-split receiver holds a packet in two buffers, and the split is a
 fixed offset while a payload header is not: ST 2110-20 permits three SRD
 headers where the cut clears one, so a two- or three-segment packet leaves its
-later headers at the head of the *payload* buffer. The parse is handed the
-header buffer alone, so such a packet is still declaring a continuation at the
-bound — flagged, and contributing no descriptors (§spec:payload-header).
+later headers at the head of the *payload* buffer.
 
 That was reasoned to be a shape "a conforming sender at the standard datagram
 size never emits." Hardware says otherwise. A Matrox ConvertIP at 1080p60
@@ -212,34 +211,34 @@ spanning two lines** — under the `PM=2110GPM` its SDP declares, which is the
 packing mode that permits exactly this. A receiver bounded at the header
 buffer drops a quarter of every frame.
 
-Given the payload buffer, the parse walks a packet's segments across the seam
-and reports descriptors for all of them.
+`parse_payload_headers` therefore takes the payload buffer as an argument and
+walks a packet's segments across the seam. Given it, every segment a packet
+declares yields a descriptor. Withheld, a packet whose later headers the cut
+displaced is flagged and contributes none — which is what a packet still
+declaring a continuation at the segment bound gets either way, the bound being
+the caller's and the flag being what names the packet it cut
+(§spec:payload-header).
 
 **The walk crosses the seam only for the packets that need it.** Stitching
 every packet's two buffers into one contiguous view cost a per-chunk
 allocation and two copies — 1.55 ms of a 2160p60 frame period, measured on a
 consumer's bench. The continuation flag of the first segment already says
 which packets continue, and it is read on the header buffer alone, so the
-second pass runs over that subset: a chunk from a sender that tiles its lines
-selects nothing and pays nothing, and one from a sender that straddles pays in
-proportion to how often it does.
+second pass runs over that subset, and over a window no wider than the headers
+it reads rather than the payload behind them. A chunk that tiles its lines
+selects nothing and measures what it measured before the buffer was a
+parameter; the ConvertIP's own shape pays 0.55 ms of its 16.67 ms frame
+period, on a 4096-packet chunk where 1024 packets cross
+(`tools/parse-benchmark.py`).
 
 `data_offset` keeps its meaning — the octets of payload header before a
-packet's sample data, counting every header parsed. For a packet whose later
-headers came from the payload buffer, that count includes them, so a
-consumer subtracting it from `source` still lands on sample data.
-
-Observable behaviour:
-
-- When the payload buffer is given and a packet declares more segments than
-  the header buffer holds, the parse shall report a descriptor for every
-  segment the packet declares, up to the segment bound.
-- When the payload buffer is withheld, a packet declaring more segments than
-  the header buffer holds shall be flagged as it is today and contribute no
-  descriptors.
-- When a packet declares a continuation at the segment bound, it shall be
-  flagged whether or not the payload buffer was given — the bound is the
-  caller's and the flag is what names the packet it cut.
+packet's sample data, counting every header parsed, those read out of the
+payload buffer included. The same octets therefore parse identically whether a
+caller presents them as one row or as two, which is the gate the second pass
+is held to. What does not survive the split is the coincidence that made
+`data_offset` the payload buffer's own base: it is that only for a one-segment
+packet, and a consumer indexing that buffer subtracts the cut from `source`
+instead.
 
 *Why the buffer is a parameter rather than an assumption.* A consumer may not
 be able to offer it. Under a device payload ring the payload buffer is on an
