@@ -193,6 +193,67 @@ arithmetic — the consumer's gather is a kernel over device memory
 (§spec:scope-boundary), where a row past the image writes outside the
 raster rather than raising.
 
+## Segments across a header-data split §spec:split-segments
+
+*Status: not started*
+
+A header-data-split receiver holds a packet in two buffers, and the split is a
+fixed offset while a payload header is not: ST 2110-20 permits three SRD
+headers where the cut clears one, so a two- or three-segment packet leaves its
+later headers at the head of the *payload* buffer. The parse is handed the
+header buffer alone, so such a packet is still declaring a continuation at the
+bound — flagged, and contributing no descriptors (§spec:payload-header).
+
+That was reasoned to be a shape "a conforming sender at the standard datagram
+size never emits." Hardware says otherwise. A Matrox ConvertIP at 1080p60
+YCbCr-4:2:2 10-bit sends 1320-octet segments against a 4800-octet line, which
+4800 does not divide, so **a quarter of its packets carry two segments
+spanning two lines** — under the `PM=2110GPM` its SDP declares, which is the
+packing mode that permits exactly this. A receiver bounded at the header
+buffer drops a quarter of every frame.
+
+Given the payload buffer, the parse walks a packet's segments across the seam
+and reports descriptors for all of them.
+
+**The walk crosses the seam only for the packets that need it.** Stitching
+every packet's two buffers into one contiguous view cost a per-chunk
+allocation and two copies — 1.55 ms of a 2160p60 frame period, measured on a
+consumer's bench. The continuation flag of the first segment already says
+which packets continue, and it is read on the header buffer alone, so the
+second pass runs over that subset: a chunk from a sender that tiles its lines
+selects nothing and pays nothing, and one from a sender that straddles pays in
+proportion to how often it does.
+
+`data_offset` keeps its meaning — the octets of payload header before a
+packet's sample data, counting every header parsed. For a packet whose later
+headers came from the payload buffer, that count includes them, so a
+consumer subtracting it from `source` still lands on sample data.
+
+Observable behaviour:
+
+- When the payload buffer is given and a packet declares more segments than
+  the header buffer holds, the parse shall report a descriptor for every
+  segment the packet declares, up to the segment bound.
+- When the payload buffer is withheld, a packet declaring more segments than
+  the header buffer holds shall be flagged as it is today and contribute no
+  descriptors.
+- When a packet declares a continuation at the segment bound, it shall be
+  flagged whether or not the payload buffer was given — the bound is the
+  caller's and the flag is what names the packet it cut.
+
+*Why the buffer is a parameter rather than an assumption.* A consumer may not
+be able to offer it. Under a device payload ring the payload buffer is on an
+accelerator and the host cannot address it, so the descriptors this parse
+would need are out of reach at the moment it runs. Withholding it is
+therefore a supported call rather than a degraded one, and the flag remains
+the answer for that case.
+
+*Why not widen the split instead.* A cut wide enough for three headers puts
+sample data in the header buffer of every one-segment packet — the common
+case — so a consumer's gather would source one frame from two buffers. The
+split cuts at the shortest header for that reason, and this parse takes the
+consequence rather than moving it (§spec:payload-header).
+
 ## The conforming fast path §spec:conforming-fast-path
 
 *Status: complete*

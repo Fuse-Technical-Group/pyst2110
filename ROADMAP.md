@@ -132,6 +132,44 @@ carries a number twice and confirm the earliest arrival is still the one kept
 Feed it the `convertip-2022-7-outage` capture and confirm the pair's reported
 loss, and the path differential, are what they were before.
 
+## Segments across a header-data split §road:split-segments
+
+§spec:split-segments. A header-data-split receiver holds a packet's later SRD
+headers at the head of its payload buffer, and this parse is handed the header
+buffer alone — so a two- or three-segment packet is flagged and contributes no
+descriptors. That was reasoned to be a shape a conforming sender never emits.
+A Matrox ConvertIP emits it on a quarter of its packets: 1320-octet segments
+against a 4800-octet line at 1080p60, under `PM=2110GPM`. Its consumer
+(`backlit_molecule` §spec:receiver-conformance) locks the flow and drops a
+quarter of every frame.
+
+### The walk continues into the payload buffer §road:split-segment-walk
+
+`parse_payload_headers` takes the payload buffer beside the header buffer and
+continues a packet's segment walk across the seam, reporting a descriptor for
+every segment declared (`src/pyst2110/payload.py`). Withholding the buffer
+keeps today's flag, which is the answer a device payload ring needs. Cites
+§spec:split-segments, §spec:payload-header.
+
+### The seam is crossed only where a packet crosses it §road:split-segment-subset
+
+The second pass runs over the packets whose first segment sets its
+continuation flag — read on the header buffer, so the selection costs a mask.
+Stitching every packet cost 1.55 ms of a 2160p60 frame period on a consumer's
+bench; a chunk that tiles its lines shall select nothing and add nothing
+measurable, and the fast path shall stay the fast path
+(`src/pyst2110/payload.py`, `tools/parse-benchmark.py`). Depends on
+§road:split-segment-walk. Cites §spec:split-segments,
+§spec:conforming-fast-path.
+
+**Verify:** Parse a captured ConvertIP chunk — 1080p60 YCbCr-4:2:2 10-bit,
+1320-octet segments, a quarter of packets carrying two — as a header-data
+split, and confirm every declared segment yields a descriptor, that
+`source - data_offset` lands on sample data for a stitched packet as it does
+for a plain one, and that `overflowed` counts only packets still continuing at
+the segment bound. Confirm on `tools/parse-benchmark.py` that a one-segment
+chunk's parse time is unchanged.
+
 ## Future §road:future
 
 - **ipmx**: IPMX is ST 2110 with a different SDP profile and variable
