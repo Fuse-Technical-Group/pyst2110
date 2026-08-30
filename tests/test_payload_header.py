@@ -658,6 +658,35 @@ def test_a_flat_payload_buffer_is_refused():
         )
 
 
+def test_a_seam_at_a_different_place_in_each_packet_is_still_crossed():
+    """A CSRC list or an extension moves where a packet's payload header
+    begins, and a per-packet size moves where its buffer ends. Neither is one
+    number over the chunk then, so the window is gathered rather than sliced —
+    and what it reads is the same octets."""
+    extended = list(_THREE_SRDS)
+    extended[0] = 0x90  # V=2, X=1, CC=0
+    extended[12:12] = [0xBE, 0xDE, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF]
+
+    packets = (_THREE_SRDS, extended)
+    cuts = (20, 28)
+    heads = chunk(
+        *[packet[:cut] for packet, cut in zip(packets, cuts, strict=True)], stride=28
+    )
+    tails = chunk(*[packet[cut:] for packet, cut in zip(packets, cuts, strict=True)])
+    sizes = np.array(cuts, dtype=np.int64)
+    offsets = parse_rtp(heads, sizes=sizes).payload_offset
+    assert offsets.tolist() == [12, 20]
+
+    result = parse_payload_headers(heads, offsets, sizes=sizes, payloads=tails)
+    whole = parse(*packets)
+
+    assert result.segments.tolist() == [3, 3]
+    assert result.line.tolist() == whole.line.tolist()
+    assert result.offset_samples.tolist() == whole.offset_samples.tolist()
+    assert result.source.tolist() == whole.source.tolist()
+    assert result.data_offset.tolist() == whole.data_offset.tolist()
+
+
 # --- the seam is crossed only where a packet crosses it -----------------------
 
 

@@ -215,7 +215,9 @@ def _conforming(
 
     ``max_segments`` does not appear: a chunk where nothing continues yields
     one descriptor a packet at any bound of one or more, and one is already
-    the floor.
+    the floor. Neither does a payload buffer: nothing continues, so nothing
+    crosses a header-data split and there is nothing to read out of it
+    (§spec:split-segments).
     """
     count = packets.shape[0]
     if count == 0 or bounds.min() < _CONFORMING_SIZE:
@@ -414,24 +416,10 @@ def _continue_into_payloads(
     tell a stitched packet from a packet that arrived whole.
     """
     span = _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE * max_segments
-    width = payloads.shape[1]
-    take = rows[:, None]
-    # Offsets within the packet, not within either buffer holding it.
-    logical = starts[rows][:, None] + np.arange(span, dtype=np.int64)
-    seam = bounds[rows][:, None]
-    tail = logical - seam
-    window: NDArray[np.uint8] = np.where(
-        logical < seam,
-        packets[take, np.clip(logical, 0, packets.shape[1] - 1)],
-        np.where(
-            (tail >= 0) & (tail < width),
-            payloads[take, np.clip(tail, 0, width - 1)],
-            0,
-        ),
-    )
+    window = _window(packets, payloads, starts, bounds, rows, span)
     # Both buffers end at one place in the packet, so what the pair holds is a
     # prefix of the window and one length bounds it.
-    reach = np.clip(seam[:, 0] + width - starts[rows], 0, span)
+    reach = np.clip(bounds[rows] + payloads.shape[1] - starts[rows], 0, span)
     again = _walk(window, np.zeros(rows.size, dtype=np.int64), reach, max_segments)
 
     walk.present[rows] = again.present
@@ -442,6 +430,61 @@ def _continue_into_payloads(
     # A packet still declaring a sample row neither buffer holds stays
     # flagged: the bound is the caller's, and so is the payload row's width.
     walk.overflowed[rows] = again.overflowed
+
+
+def _window(
+    packets: NDArray[np.uint8],
+    payloads: NDArray[np.uint8],
+    starts: NDArray[np.int64],
+    bounds: NDArray[np.int64],
+    rows: NDArray[np.int64],
+    span: int,
+    /,
+) -> NDArray[np.uint8]:
+    """One row a crossing packet: its own octets from ``payload_offset`` on.
+
+    Both halves come from where the packet's octets actually are — the header
+    buffer up to the cut, the payload buffer after it.
+
+    A receiver cuts at a fixed offset and an RTP header with no CSRC list and
+    no extension is a fixed size, so both bounds are usually one number for
+    the whole chunk, and each half of the window is then a column slice of
+    gathered rows — a copy a row at a time. Where either varies, so does every
+    octet's home, and the window is gathered element by element instead: six
+    times the cost, over the packets that cross and no others
+    (§spec:conforming-fast-path).
+    """
+    begin = starts[rows]
+    keep = np.clip(bounds[rows] - begin, 0, span)
+    if begin[0] >= 0 and _one_number(begin) and _one_number(keep):
+        head = int(keep[0])
+        take = min(span - head, payloads.shape[1])
+        window = np.zeros((rows.size, span), dtype=np.uint8)
+        window[:, :head] = packets[rows, int(begin[0]) : int(begin[0]) + head]
+        window[:, head : head + take] = payloads[rows, :take]
+        return window
+
+    at = rows[:, None]
+    # Offsets within the packet, not within either buffer holding it.
+    logical = begin[:, None] + np.arange(span, dtype=np.int64)
+    seam = bounds[rows][:, None]
+    tail = logical - seam
+    width = payloads.shape[1]
+    gathered: NDArray[np.uint8] = np.where(
+        (logical >= 0) & (logical < seam),
+        packets[at, np.clip(logical, 0, packets.shape[1] - 1)],
+        np.where(
+            (tail >= 0) & (tail < width),
+            payloads[at, np.clip(tail, 0, width - 1)],
+            0,
+        ),
+    )
+    return gathered
+
+
+def _one_number(values: NDArray[np.int64]) -> bool:
+    """Whether every packet agrees on this bound, so a slice can read it."""
+    return bool((values == values[0]).all())
 
 
 def _assemble(
