@@ -352,6 +352,47 @@ def test_an_overflowed_packet_still_reports_its_packet_aligned_fields():
     assert result.overflowed_count == 1
 
 
+def test_a_size_that_cuts_a_second_srd_header_flags_the_packet():
+    """A packet declaring a sample row past the end of what the caller handed
+    over is flagged, not half-parsed.
+
+    Nothing about this is a header-data split: any ``sizes`` entry ending
+    mid-header does it, and the header buffer of a split receiver is only the
+    commonest way to arrive at one. Before the flag, such a packet reported
+    the segments that did fit and a ``data_offset`` short by six octets for
+    the header that did not — so every ``source`` of it pointed six octets
+    early and the gather read the wrong bytes. That is the silent failure
+    §spec:payload-header exists to name, so the packet contributes nothing.
+    """
+    rows = chunk(_TWO_SRDS)
+    offsets = parse_rtp(rows).payload_offset
+
+    # Two octets into the second SRD header's last field.
+    cut = parse_payload_headers(rows, offsets, sizes=np.array([24]))
+    assert cut.unreadable.tolist() == [True]
+    assert cut.overflowed.tolist() == [False]
+    assert cut.segments.tolist() == [0]
+    assert cut.packet.tolist() == []
+
+    # Two octets further and the same packet parses whole, which is what says
+    # the flag is the bound doing its job rather than the packet being
+    # malformed.
+    whole = parse_payload_headers(rows, offsets, sizes=np.array([26]))
+    assert not whole.unreadable.any()
+    assert whole.segments.tolist() == [2]
+    assert whole.data_offset.tolist() == [26]
+
+
+def test_a_first_srd_the_caller_cut_short_is_not_called_overflowed():
+    """The flag names a packet that *declared* a sample row nobody read. A
+    packet too short for its own first SRD declared nothing past what it
+    delivered, so it reports no descriptors and neither flag."""
+    result = parse([*_RTP, 0x00, 0x01, 0x04])
+    assert result.segments.tolist() == [0]
+    assert result.overflowed.tolist() == [False]
+    assert result.unreadable.tolist() == [False]
+
+
 def test_an_empty_chunk_yields_nothing():
     rows = np.zeros((0, 20), dtype=np.uint8)
     result = parse_payload_headers(rows, np.zeros(0, dtype=np.int64))
