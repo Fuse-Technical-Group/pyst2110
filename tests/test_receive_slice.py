@@ -236,3 +236,119 @@ def test_a_dropped_packet_shows_up_as_loss_and_a_hole(frame):
     ):
         covered[start : start + length] += 1
     assert int((covered == 0).sum()) == 3 * payload_size
+
+
+# --- a straddling sender, held in two buffers (§spec:split-segments) ----------
+
+_SRD_SIZE = 6
+# What a Matrox ConvertIP sends at this raster. 4800 does not divide it, so a
+# packet spans two rows and leaves its second SRD header past the cut.
+_STRADDLING_SEGMENT = 1320
+
+
+def build_straddling_frame(
+    video: SdpVideo, segment: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A whole frame as a header-data-split receiver holds it: two buffers.
+
+    The header block is the twenty octets the cut clears, so a packet spanning
+    two rows leaves its second SRD header at the head of its payload row. The
+    payload rows carry those headers and nothing else — this parse reads no
+    sample data, and a row of it would prove nothing the header does not.
+    """
+    stride = line_bytes(video)
+    group_bytes, group_pixels = pgroup(video)
+    total = video.height * stride
+    heads: list[bytearray] = []
+    tails: list[bytearray] = []
+
+    position = 0
+    while position < total:
+        remaining = min(segment, total - position)
+        segments: list[tuple[int, int, int]] = []
+        while remaining:
+            line, within = divmod(position, stride)
+            take = min(remaining, stride - within)
+            segments.append((line, within // group_bytes * group_pixels, take))
+            position += take
+            remaining -= take
+
+        line, offset, length = segments[0]
+        head = build_packet(
+            sequence=len(heads),
+            timestamp=0x0AAAAAAA,
+            line=line,
+            offset=offset,
+            length=length,
+            marker=position >= total,
+        )
+        tail = bytearray(_SRD_SIZE)
+        if len(segments) > 1:
+            head[18] |= 0x80  # C=1: another SRD header follows, past the cut
+            line, offset, length = segments[1]
+            tail[0:2] = length.to_bytes(2, "big")  # SRD Length
+            tail[2:4] = line.to_bytes(2, "big")  # F=0, SRD Row Number
+            tail[4:6] = offset.to_bytes(2, "big")  # C=0, SRD Offset
+        heads.append(head)
+        tails.append(tail)
+
+    rows = np.array([list(head) for head in heads], dtype=np.uint8)
+    payloads = np.array([list(tail) for tail in tails], dtype=np.uint8)
+    return rows, payloads, np.full(len(heads), _HEADER_SIZE, dtype=np.int64)
+
+
+def _covered(video: SdpVideo, parsed) -> np.ndarray:
+    """Octets of the raster each descriptor set covers, counted once each."""
+    stride = line_bytes(video)
+    fits = fits_raster(video, parsed.line, parsed.offset_samples)
+    starts = raster_offset(video, parsed.line[fits], parsed.offset_samples[fits])
+    coverage = np.zeros(video.height * stride + 1, dtype=np.int64)
+    np.add.at(coverage, starts, 1)
+    np.add.at(coverage, starts + parsed.length[fits], -1)
+    return np.cumsum(coverage)[:-1]
+
+
+def test_a_straddling_frame_tiles_the_raster_across_the_split():
+    """The ConvertIP's own shape, end to end: offer in, raster out.
+
+    Its segment does not divide the line, so a quarter of its packets leave a
+    second SRD header at the head of a payload buffer. Given those buffers the
+    frame tiles the raster exactly once, as a tiling sender's does.
+    """
+    video = parse_video_format(_OFFER)
+    rows, payloads, sizes = build_straddling_frame(video, _STRADDLING_SEGMENT)
+    assert rows.shape[0] == 3928
+
+    rtp = parse_rtp(rows, sizes=sizes)
+    parsed = parse_payload_headers(
+        rows, rtp.payload_offset, sizes=sizes, payloads=payloads
+    )
+
+    assert not parsed.overflowed.any()
+    assert parsed.segments.tolist().count(2) == 981  # a quarter of them
+    assert parsed.packet.size == 4909
+
+    covered = _covered(video, parsed)
+    assert covered.min() == 1, "a hole in the raster"
+    assert covered.max() == 1, "an overlap in the raster"
+
+
+def test_the_same_frame_loses_a_quarter_with_the_payload_buffer_withheld():
+    """What a consumer measured before the buffer was a parameter: the flow
+    locks, and the packets that span two rows place nothing at all."""
+    video = parse_video_format(_OFFER)
+    rows, _, sizes = build_straddling_frame(video, _STRADDLING_SEGMENT)
+
+    rtp = parse_rtp(rows, sizes=sizes)
+    parsed = parse_payload_headers(rows, rtp.payload_offset, sizes=sizes)
+
+    # 2947 of 3928 packets place, which is what a consumer measured. The
+    # fault is this side's — the packets are compliant and the parse was
+    # handed one buffer of the two — so they are `unreadable`, not
+    # `overflowed`.
+    assert parsed.unreadable_count == 981
+    assert parsed.overflowed_count == 0
+    assert parsed.packet.size == 2947
+    covered = _covered(video, parsed)
+    placed = float(np.count_nonzero(covered)) / covered.size
+    assert 0.70 < placed < 0.80, f"{placed:.3f} of the raster"

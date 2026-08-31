@@ -154,11 +154,21 @@ data-dependent. The parse walks a bounded number of segments and stays
 vectorized across every packet at each one, because a Python loop over a
 quarter of a million packets a second is not affordable (§req:priorities).
 ST 2110-20 permits three and RFC 4175 sets no limit, so the bound is the
-caller's with three as the default. A packet still declaring a continuation
-at the bound is flagged rather than trimmed in silence — dropping part of a
-raster without saying so is the failure worth naming.
+caller's with three as the default.
 
-The flag is per packet, because the instruction it carries is to discard
+A packet declaring a sample row the walk did not read is flagged rather than
+trimmed in silence, and **two flags rather than one**, because two things stop
+the walk and the remedies differ. A packet still declaring a continuation at
+the bound is `overflowed`: the sender declared past the caller's policy, and
+the answer is a wider bound or a refused flow. A packet whose next SRD header
+lies past the end of the buffers the caller handed over is `unreadable`: the
+packet is compliant and the parse was handed too little of it, and the answer
+is more buffer. Nothing about the second is particular to a header-data split
+(§spec:split-segments) — any `sizes` entry ending mid-header reaches it. A
+consumer wanting the pair as one condition takes the union; one told only the
+union cannot tell the two apart, and they are not each other's fix.
+
+Either flag is per packet, because the instruction it carries is to discard
 that packet. A chunk-wide count says one packet in four thousand is poison
 and gives no way to find it, which leaves only two answers and both are
 wrong: gather everything, or drop a whole frame over one crafted packet.
@@ -192,6 +202,75 @@ Bounding them is §spec:geometry's, and belongs before the placement
 arithmetic — the consumer's gather is a kernel over device memory
 (§spec:scope-boundary), where a row past the image writes outside the
 raster rather than raising.
+
+## Segments across a header-data split §spec:split-segments
+
+*Status: complete*
+
+A header-data-split receiver holds a packet in two buffers, and the split is a
+fixed offset while a payload header is not: ST 2110-20 permits three SRD
+headers where the cut clears one, so a two- or three-segment packet leaves its
+later headers at the head of the *payload* buffer.
+
+That was reasoned to be a shape "a conforming sender at the standard datagram
+size never emits." Hardware says otherwise. A Matrox ConvertIP at 1080p60
+YCbCr-4:2:2 10-bit sends 1320-octet segments against a 4800-octet line, which
+4800 does not divide, so **a quarter of its packets carry two segments
+spanning two lines** — under the `PM=2110GPM` its SDP declares, which is the
+packing mode that permits exactly this. A receiver bounded at the header
+buffer drops a quarter of every frame.
+
+`parse_payload_headers` therefore takes the payload buffer as an argument and
+walks a packet's segments across the seam. Given it, every segment a packet
+declares yields a descriptor. Withheld, a packet whose later headers the cut
+displaced is `unreadable` and contributes none — the parse was handed one
+buffer of the two, which is a fault on this side rather than the sender's. A
+packet still declaring a continuation at the segment bound is `overflowed`
+whether the buffer was offered or not: the bound is the caller's policy and
+the payload buffer does not lift it (§spec:payload-header).
+
+The two are separate columns because the remedy differs — pass the buffer
+against one, raise the bound or refuse the sender against the other — and
+because `unreadable` was not previously reported at all. Before this, a packet
+whose second SRD header lay past the buffer lost its continuation silently and
+emitted the segments that did fit, each with a `source` six octets early per
+header nobody read. Any `sizes` entry ending mid-header did it, split or not,
+so the flag is the wider fix and the split is only the commonest way to reach
+the fault.
+
+**The walk crosses the seam only for the packets that need it.** Stitching
+every packet's two buffers into one contiguous view cost a per-chunk
+allocation and two copies — 1.55 ms of a 2160p60 frame period, measured on a
+consumer's bench. The continuation flag of the first segment already says
+which packets continue, and it is read on the header buffer alone, so the
+second pass runs over that subset, and over a window no wider than the headers
+it reads rather than the payload behind them. A chunk that tiles its lines
+selects nothing and measures what it measured before the buffer was a
+parameter; the ConvertIP's own shape pays 0.55 ms of its 16.67 ms frame
+period, on a 4096-packet chunk where 1024 packets cross
+(`tools/parse-benchmark.py`).
+
+`data_offset` keeps its meaning — the octets of payload header before a
+packet's sample data, counting every header parsed, those read out of the
+payload buffer included. The same octets therefore parse identically whether a
+caller presents them as one row or as two, which is the gate the second pass
+is held to. What does not survive the split is the coincidence that made
+`data_offset` the payload buffer's own base: it is that only for a one-segment
+packet, and a consumer indexing that buffer subtracts the cut from `source`
+instead.
+
+*Why the buffer is a parameter rather than an assumption.* A consumer may not
+be able to offer it. Under a device payload ring the payload buffer is on an
+accelerator and the host cannot address it, so the descriptors this parse
+would need are out of reach at the moment it runs. Withholding it is
+therefore a supported call rather than a degraded one, and the flag remains
+the answer for that case.
+
+*Why not widen the split instead.* A cut wide enough for three headers puts
+sample data in the header buffer of every one-segment packet — the common
+case — so a consumer's gather would source one frame from two buffers. The
+split cuts at the shortest header for that reason, and this parse takes the
+consequence rather than moving it (§spec:payload-header).
 
 ## The conforming fast path §spec:conforming-fast-path
 

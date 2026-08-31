@@ -42,6 +42,30 @@ RASTER = SdpVideo(
     max_udp=1460,
 )
 
+# The raster a header-data split is measured over: 1080p60 YCbCr-4:2:2 10-bit,
+# which is what a Matrox ConvertIP was sending when a consumer found a quarter
+# of every frame missing (§spec:split-segments).
+SPLIT_RASTER = SdpVideo(
+    width=1920,
+    height=1080,
+    frame_rate=Fraction(60, 1),
+    depth=10,
+    sampling="YCbCr-4:2:2",
+    max_udp=1460,
+)
+
+#: Octets a segment, against SPLIT_RASTER's 4800-octet line. 1200 divides it,
+#: so every packet carries one SRD header and nothing crosses the cut; 1320 is
+#: the ConvertIP's own, and 4800 = 3 x 1320 + 840 puts two segments in every
+#: fourth packet.
+TILED_SEGMENT = 1200
+STRADDLING_SEGMENT = 1320
+
+#: Octets of header a split receiver keeps: the RFC 3550 fixed header, the
+#: extended sequence number, and the one SRD header the cut clears.
+SPLIT_CUT = 20
+_SRD_SIZE = 6
+
 _NS_PER_MS = 1_000_000
 _US_PER_S = 1_000_000
 _NS_PER_S = 1_000_000_000
@@ -85,6 +109,69 @@ def _put_u16(block: np.ndarray, octet: int, values: np.ndarray) -> None:
     """Write a big-endian 16-bit field into every packet's column."""
     block[:, octet] = (values >> 8) & 0xFF
     block[:, octet + 1] = values & 0xFF
+
+
+def split_chunk(count: int, segment: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A chunk as a header-data-split receiver holds it, at ``segment`` octets.
+
+    Two buffers: twenty octets of header a packet, and the payload row that
+    follows the cut. Where ``segment`` does not divide the line, a packet spans
+    two rows and its second SRD header lands at the head of its payload row —
+    which is the shape this benchmark exists to time (§spec:split-segments).
+
+    Written field by field like :func:`conforming_chunk`, so the number
+    measures the parse rather than a round trip through our own builder.
+    """
+    octets, pixels = geometry.pgroup(SPLIT_RASTER)
+    line = geometry.line_bytes(SPLIT_RASTER)
+    heads = np.zeros((count, SPLIT_CUT), dtype=np.uint8)
+    payloads = np.zeros((count, _SRD_SIZE + segment), dtype=np.uint8)
+
+    position = 0
+    for index in range(count):
+        remaining = segment
+        segments: list[tuple[int, int, int]] = []
+        while remaining:
+            row, within = divmod(position, line)
+            take = min(remaining, line - within)
+            segments.append(
+                (row % SPLIT_RASTER.height, within // octets * pixels, take)
+            )
+            position += take
+            remaining -= take
+        _write_split_packet(heads[index], payloads[index], index, segments)
+    return heads, payloads, np.full(count, SPLIT_CUT, dtype=np.int64)
+
+
+def _write_split_packet(
+    head: np.ndarray,
+    payload_row: np.ndarray,
+    sequence: int,
+    segments: list[tuple[int, int, int]],
+) -> None:
+    """One packet's headers, the first SRD in the header row and the rest past
+    the cut, where a fixed-offset split leaves them."""
+    head[0] = 0x80  # V=2, P=0, X=0, CC=0
+    head[1] = 96  # M=0, PT=96
+    _put(head, 2, sequence % (1 << 16))  # RTP sequence number
+    _put(head, 8, 0x0A0B)  # SSRC, high half
+    _put(head, 10, 0x0C0D)  # SSRC, low half
+    _put(head, 12, (sequence // (1 << 16)) % (1 << 16))  # Extended Sequence
+    for index, (row, offset, length) in enumerate(segments):
+        # The C bit says another SRD header follows.
+        carry = 0x0000 if index == len(segments) - 1 else 0x8000
+        target, at = (
+            (head, 14) if index == 0 else (payload_row, (index - 1) * _SRD_SIZE)
+        )
+        _put(target, at, length)  # SRD Length
+        _put(target, at + 2, row)  # F=0, SRD Row Number
+        _put(target, at + 4, offset | carry)  # C, SRD Offset
+
+
+def _put(row: np.ndarray, octet: int, value: int) -> None:
+    """Write a big-endian 16-bit field into one packet's row."""
+    row[octet] = (value >> 8) & 0xFF
+    row[octet + 1] = value & 0xFF
 
 
 def odd_strided(block: np.ndarray) -> np.ndarray:
@@ -209,7 +296,56 @@ def main() -> int:
 
     speedup = timings["both, general"] / timings["both, fast"]
     print(f"\n  fast path is {speedup:.1f}x the general path over the same chunk")
+    split(args)
     return 0
+
+
+def split(args: argparse.Namespace) -> None:
+    """What crossing a header-data split costs, and what declining to costs.
+
+    Two chunks of the same raster: one whose segment divides the line, so no
+    packet crosses the cut, and one at the ConvertIP's 1320 octets, where a
+    quarter of them do. Offering the payload buffer to the first shall not
+    move its number — the selection reads the first segment's continuation bit
+    on the header buffer and finds nothing (§spec:split-segments).
+    """
+    line = geometry.line_bytes(SPLIT_RASTER)
+    print(
+        f"\nheader-data split — raster {SPLIT_RASTER.width}x{SPLIT_RASTER.height} "
+        f"{float(SPLIT_RASTER.frame_rate):.2f} fps, {line} octets a line, "
+        f"cut at {SPLIT_CUT}\n"
+    )
+    print(f"  {'':<34}{'us/chunk':>10}{'ns/packet':>12}{'ms/frame':>11}")
+
+    for label, segment in (
+        ("tiled", TILED_SEGMENT),
+        ("straddling", STRADDLING_SEGMENT),
+    ):
+        heads, payloads, sizes = split_chunk(args.packets, segment)
+        offsets = rtp.parse_rtp(heads, sizes=sizes).payload_offset
+        per_frame = -(-(SPLIT_RASTER.height * line) // segment)
+        parsed = payload.parse_payload_headers(
+            heads, offsets, sizes=sizes, payloads=payloads
+        )
+        crossed = int(np.count_nonzero(parsed.segments > 1))
+
+        def withheld(heads=heads, offsets=offsets, sizes=sizes) -> object:
+            return payload.parse_payload_headers(heads, offsets, sizes=sizes)
+
+        def offered(
+            heads=heads, offsets=offsets, sizes=sizes, payloads=payloads
+        ) -> object:
+            return payload.parse_payload_headers(
+                heads, offsets, sizes=sizes, payloads=payloads
+            )
+
+        print(
+            f"  {label} at {segment} octets a segment: "
+            f"{crossed} of {args.packets} packets cross the cut"
+        )
+        for shown, work in (("withheld", withheld), ("payloads offered", offered)):
+            seconds = fastest(work, args.repeat, args.loops)
+            report(f"  {shown}", seconds, args.packets, per_frame)
 
 
 if __name__ == "__main__":
