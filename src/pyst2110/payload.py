@@ -101,27 +101,40 @@ class PayloadHeaders:
     #: against the buffer actually read.
     source: NDArray[np.int64]
 
-    #: Packet-aligned: which packets declared a sample row this parse could
-    #: not read — the continuation bit still set at ``max_segments``, or an
-    #: SRD header past the end of every buffer offered. Such a packet's
-    #: descriptors are missing *and* the survivors are invalid — each
-    #: unparsed SRD header leaves every :attr:`source` of that packet six
-    #: octets early — so none of them is emitted and :attr:`segments` reads
-    #: zero. The flag is what says the packet arrived and was dropped, which
-    #: a receiver counting loss needs and a chunk-wide count cannot give: it
-    #: names one packet in thousands as poison without saying which.
-    #:
-    #: Two senders reach it. A generic RFC 4175 one declares more SRDs than
-    #: the bound allows; ST 2110-20 caps a packet at the three the default
-    #: bound holds. And a header-data-split receiver that withholds
-    #: ``payloads`` cannot follow a packet whose later headers the cut left
-    #: in the payload buffer (§spec:split-segments).
+    # Packet-aligned, and two flags rather than one. Both say the packet
+    # arrived and was dropped — its descriptors are missing *and* the
+    # survivors are invalid, each unparsed SRD header leaving every
+    # :attr:`source` of that packet six octets early, so none is emitted and
+    # :attr:`segments` reads zero. What they do not share is the remedy, and a
+    # consumer that saw only their union could not tell "refuse this sender"
+    # from "hand the parse more buffer". Either is per packet, because the
+    # instruction each carries is to discard that packet: a chunk-wide count
+    # names one packet in thousands as poison without saying which. A consumer
+    # wanting the pair as one condition takes the ``|`` of them.
+
+    #: Which packets still had the continuation bit set at ``max_segments``,
+    #: having declared more sample rows than the caller's bound admits. The
+    #: fault is the sender's against that policy — only a generic RFC 4175 one
+    #: reaches it, ST 2110-20 capping a packet at the three SRDs the default
+    #: bound allows — and the remedy is to raise the bound or refuse the flow.
     overflowed: NDArray[np.bool_]
+    #: Which packets declared a sample row whose SRD header lay past the end
+    #: of every buffer offered. The fault is on this side of the wire: the
+    #: packet is compliant and the parse was handed too little of it. A
+    #: header-data split does this to a two- or three-segment packet whenever
+    #: ``payloads`` is withheld (§spec:split-segments), and so does any
+    #: ``sizes`` entry that ends mid-header, split or not.
+    unreadable: NDArray[np.bool_]
 
     @property
     def overflowed_count(self) -> int:
         """Overflowed packets in this chunk, for a metric that counts them."""
         return int(np.count_nonzero(self.overflowed))
+
+    @property
+    def unreadable_count(self) -> int:
+        """Unreadable packets in this chunk, counted the same way."""
+        return int(np.count_nonzero(self.unreadable))
 
 
 def parse_payload_headers(
@@ -141,7 +154,9 @@ def parse_payload_headers(
     ``max_segments`` bounds the walk over a packet's segments and defaults to
     the three ST 2110-20 permits; a packet declaring more is flagged in
     :attr:`PayloadHeaders.overflowed` and contributes no descriptors. Below
-    one it raises.
+    one it raises. A packet declaring a sample row whose header lies past the
+    end of the buffers given is flagged in
+    :attr:`PayloadHeaders.unreadable` instead, and contributes none either.
 
     ``payloads`` is what a header-data-split receiver holds beside ``packets``
     — one row a packet, holding the octets past the cut. The cut is a fixed
@@ -252,6 +267,7 @@ def _conforming(
         # One segment a packet, so its data begins where the header ends.
         source=np.full(count, _CONFORMING_SIZE, dtype=np.int64),
         overflowed=np.zeros(count, dtype=np.bool_),
+        unreadable=np.zeros(count, dtype=np.bool_),
     )
 
 
@@ -275,15 +291,16 @@ def _general(
     stitched copy of the chunk (§spec:split-segments).
     """
     walk = _walk(packets, starts, bounds, max_segments)
-    crossing = walk.crossing
-    if payloads is not None and crossing is not None and crossing.any():
+    unreadable = walk.unreadable
+    if payloads is not None and unreadable is not None and unreadable.any():
         _continue_into_payloads(
             walk,
+            unreadable,
             packets,
             payloads,
             starts,
             bounds,
-            np.flatnonzero(crossing),
+            np.flatnonzero(unreadable),
             max_segments,
         )
     return _assemble(walk, starts, max_segments)
@@ -304,13 +321,14 @@ class _Walk:
     line: NDArray[np.int64]
     field: NDArray[np.bool_]
     offset: NDArray[np.int64]
-    #: Declared a sample row this pass could not read: the bound cut it, or
-    #: the buffer ended under it.
+    #: Still declaring a continuation at ``max_segments``.
     overflowed: NDArray[np.bool_]
-    #: The buffer ended under it — the subset a payload buffer can rescue.
-    #: ``None`` where no packet reached a second segment at all, which is the
-    #: ordinary chunk and the reason offering the buffer costs nothing.
-    crossing: NDArray[np.bool_] | None
+    #: Declaring a sample row whose header lay past the end of this buffer —
+    #: which, before the second pass runs, is also the subset a payload buffer
+    #: can rescue. ``None`` where no packet reached a second segment at all,
+    #: which is the ordinary chunk and the reason offering the buffer costs
+    #: nothing.
+    unreadable: NDArray[np.bool_] | None
 
 
 def _walk(
@@ -333,7 +351,7 @@ def _walk(
     field = np.zeros(shape, dtype=np.bool_)
     offset = np.zeros(shape, dtype=np.int64)
     present = np.zeros(shape, dtype=np.bool_)
-    crossing: NDArray[np.bool_] | None = None
+    unreadable: NDArray[np.bool_] | None = None
 
     # A segment exists only if the one before it set the continuation bit and
     # its own six octets are inside the packet.
@@ -361,7 +379,7 @@ def _walk(
             # segment never reaches a second, and pays nothing for the
             # possibility.
             missed: NDArray[np.bool_] = active & ~fits
-            crossing = missed if crossing is None else (crossing | missed)
+            unreadable = missed if unreadable is None else (unreadable | missed)
 
         present[:, segment] = read
         length[:, segment] = np.where(read, raw_length, 0)
@@ -386,13 +404,14 @@ def _walk(
     # A packet with SRD headers nobody parsed has every source it did parse
     # six octets early per missing header, whether the bound stopped the walk
     # or the buffer did. Its descriptors are wrong rather than merely
-    # incomplete, so `_assemble` emits none of them and the flag says why.
-    overflowed = active if crossing is None else (active | crossing)
-    return _Walk(sequence, present, length, line, field, offset, overflowed, crossing)
+    # incomplete, so `_assemble` emits none of them — but which of the two
+    # stopped it is kept apart, because the remedies differ.
+    return _Walk(sequence, present, length, line, field, offset, active, unreadable)
 
 
 def _continue_into_payloads(
     walk: _Walk,
+    unreadable: NDArray[np.bool_],
     packets: NDArray[np.uint8],
     payloads: NDArray[np.uint8],
     starts: NDArray[np.int64],
@@ -413,7 +432,9 @@ def _continue_into_payloads(
     (§spec:split-segments).
 
     ``walk`` is overwritten in place for those rows, so what follows cannot
-    tell a stitched packet from a packet that arrived whole.
+    tell a stitched packet from a packet that arrived whole. ``unreadable`` is
+    ``walk.unreadable`` with its ``None`` ruled out by the caller, which is
+    also where ``rows`` came from.
     """
     span = _layout.EXTENDED_SEQUENCE_SIZE + _layout.SRD_SIZE * max_segments
     window = _window(packets, payloads, starts, bounds, rows, span)
@@ -427,9 +448,11 @@ def _continue_into_payloads(
     walk.line[rows] = again.line
     walk.field[rows] = again.field
     walk.offset[rows] = again.offset
-    # A packet still declaring a sample row neither buffer holds stays
-    # flagged: the bound is the caller's, and so is the payload row's width.
+    # A packet the pair of buffers still cannot satisfy stays flagged, under
+    # whichever of the two ran out: the bound is the caller's, and so is the
+    # payload row's width.
     walk.overflowed[rows] = again.overflowed
+    unreadable[rows] = False if again.unreadable is None else again.unreadable
 
 
 def _window(
@@ -500,8 +523,18 @@ def _assemble(
     preceding = np.cumsum(walk.length, axis=1, dtype=np.int64) - walk.length
     source = data_offset[:, None] + preceding
 
+    if walk.unreadable is None:
+        # No packet reached a second segment, so none could run out of buffer
+        # there. The column is allocated rather than shared with `overflowed`:
+        # two names for one array is a caller's mutation showing up twice.
+        unreadable = np.zeros(count, dtype=np.bool_)
+        dropped = walk.overflowed
+    else:
+        unreadable = walk.unreadable
+        dropped = walk.overflowed | unreadable
+
     present = walk.present
-    present &= ~walk.overflowed[:, None]
+    present &= ~dropped[:, None]
     counted = present.sum(axis=1, dtype=np.int64)
 
     # A packet's segments are contiguous from the first — the continuation bit
@@ -519,4 +552,5 @@ def _assemble(
         offset_samples=walk.offset.ravel()[kept],
         source=source.ravel()[kept],
         overflowed=walk.overflowed,
+        unreadable=unreadable,
     )

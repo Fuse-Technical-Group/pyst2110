@@ -342,8 +342,12 @@ def test_the_same_frame_loses_a_quarter_with_the_payload_buffer_withheld():
     rtp = parse_rtp(rows, sizes=sizes)
     parsed = parse_payload_headers(rows, rtp.payload_offset, sizes=sizes)
 
-    # 2947 of 3928 packets place, which is what a consumer measured.
-    assert parsed.overflowed_count == 981
+    # 2947 of 3928 packets place, which is what a consumer measured. The
+    # fault is this side's — the packets are compliant and the parse was
+    # handed one buffer of the two — so they are `unreadable`, not
+    # `overflowed`.
+    assert parsed.unreadable_count == 981
+    assert parsed.overflowed_count == 0
     assert parsed.packet.size == 2947
     covered = _covered(video, parsed)
     placed = float(np.count_nonzero(covered)) / covered.size

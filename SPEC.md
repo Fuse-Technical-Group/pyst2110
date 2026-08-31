@@ -154,12 +154,21 @@ data-dependent. The parse walks a bounded number of segments and stays
 vectorized across every packet at each one, because a Python loop over a
 quarter of a million packets a second is not affordable (§req:priorities).
 ST 2110-20 permits three and RFC 4175 sets no limit, so the bound is the
-caller's with three as the default. A packet still declaring a continuation
-at the bound is flagged rather than trimmed in silence, and so is one whose
-next header lies past the end of every buffer offered — dropping part of a
-raster without saying so is the failure worth naming (§spec:split-segments).
+caller's with three as the default.
 
-The flag is per packet, because the instruction it carries is to discard
+A packet declaring a sample row the walk did not read is flagged rather than
+trimmed in silence, and **two flags rather than one**, because two things stop
+the walk and the remedies differ. A packet still declaring a continuation at
+the bound is `overflowed`: the sender declared past the caller's policy, and
+the answer is a wider bound or a refused flow. A packet whose next SRD header
+lies past the end of the buffers the caller handed over is `unreadable`: the
+packet is compliant and the parse was handed too little of it, and the answer
+is more buffer. Nothing about the second is particular to a header-data split
+(§spec:split-segments) — any `sizes` entry ending mid-header reaches it. A
+consumer wanting the pair as one condition takes the union; one told only the
+union cannot tell the two apart, and they are not each other's fix.
+
+Either flag is per packet, because the instruction it carries is to discard
 that packet. A chunk-wide count says one packet in four thousand is poison
 and gives no way to find it, which leaves only two answers and both are
 wrong: gather everything, or drop a whole frame over one crafted packet.
@@ -214,10 +223,20 @@ buffer drops a quarter of every frame.
 `parse_payload_headers` therefore takes the payload buffer as an argument and
 walks a packet's segments across the seam. Given it, every segment a packet
 declares yields a descriptor. Withheld, a packet whose later headers the cut
-displaced is flagged and contributes none — which is what a packet still
-declaring a continuation at the segment bound gets either way, the bound being
-the caller's and the flag being what names the packet it cut
-(§spec:payload-header).
+displaced is `unreadable` and contributes none — the parse was handed one
+buffer of the two, which is a fault on this side rather than the sender's. A
+packet still declaring a continuation at the segment bound is `overflowed`
+whether the buffer was offered or not: the bound is the caller's policy and
+the payload buffer does not lift it (§spec:payload-header).
+
+The two are separate columns because the remedy differs — pass the buffer
+against one, raise the bound or refuse the sender against the other — and
+because `unreadable` was not previously reported at all. Before this, a packet
+whose second SRD header lay past the buffer lost its continuation silently and
+emitted the segments that did fit, each with a `source` six octets early per
+header nobody read. Any `sizes` entry ending mid-header did it, split or not,
+so the flag is the wider fix and the split is only the commonest way to reach
+the fault.
 
 **The walk crosses the seam only for the packets that need it.** Stitching
 every packet's two buffers into one contiguous view cost a per-chunk

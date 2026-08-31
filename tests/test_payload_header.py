@@ -595,6 +595,7 @@ def test_a_split_parse_is_the_contiguous_parse():
         "offset_samples",
         "source",
         "overflowed",
+        "unreadable",
     ):
         mine = getattr(stitched, name)
         theirs = getattr(whole, name)
@@ -607,7 +608,8 @@ def test_withholding_the_payload_buffer_flags_the_packet():
     answer: the packet arrived, and none of its descriptors is emitted."""
     result = parse_split(_TWO_SRDS, withhold=True)
 
-    assert result.overflowed.tolist() == [True]
+    assert result.unreadable.tolist() == [True]
+    assert result.overflowed.tolist() == [False]
     assert result.segments.tolist() == [0]
     assert result.packet.tolist() == []
     assert result.extended_sequence.tolist() == [2]
@@ -616,6 +618,7 @@ def test_withholding_the_payload_buffer_flags_the_packet():
 def test_a_continuation_past_the_bound_is_flagged_with_the_buffer_given():
     """The bound is the caller's, and the payload buffer does not lift it."""
     assert parse_split(_FOUR_SRDS).overflowed.tolist() == [True]
+    assert parse_split(_FOUR_SRDS).unreadable.tolist() == [False]
     assert parse_split(_FOUR_SRDS).segments.tolist() == [0]
     assert parse_split(_THREE_SRDS, max_segments=2).overflowed.tolist() == [True]
 
@@ -629,7 +632,8 @@ def test_a_payload_buffer_short_of_the_headers_flags_the_packet():
     offsets = parse_rtp(heads, sizes=sizes).payload_offset
 
     result = parse_payload_headers(heads, offsets, sizes=sizes, payloads=tails)
-    assert result.overflowed.tolist() == [True]
+    assert result.unreadable.tolist() == [True]
+    assert result.overflowed.tolist() == [False]
     assert result.packet.tolist() == []
 
 
@@ -687,6 +691,25 @@ def test_a_seam_at_a_different_place_in_each_packet_is_still_crossed():
     assert result.data_offset.tolist() == whole.data_offset.tolist()
 
 
+def test_the_two_flags_name_two_faults_with_two_remedies():
+    """A sender declaring past the caller's bound and a caller handing over
+    too little buffer are different problems, so the packet says which it hit.
+    Collapsed into one column, a consumer could not tell "refuse this sender"
+    from "pass the payload buffer"."""
+    bounded = parse(_FOUR_SRDS)
+    assert bounded.overflowed.tolist() == [True]
+    assert bounded.unreadable.tolist() == [False]
+
+    starved = parse_split(_TWO_SRDS, withhold=True)
+    assert starved.overflowed.tolist() == [False]
+    assert starved.unreadable.tolist() == [True]
+
+    # Both suppress the packet's descriptors, and a consumer wanting the pair
+    # as one condition takes the OR.
+    assert bounded.segments.tolist() == starved.segments.tolist() == [0]
+    assert (starved.overflowed | starved.unreadable).tolist() == [True]
+
+
 # --- the seam is crossed only where a packet crosses it -----------------------
 
 
@@ -725,7 +748,7 @@ def test_withholding_the_buffer_never_reaches_the_second_pass(monkeypatch):
     offsets = parse_rtp(heads, sizes=sizes).payload_offset
     _seam_watched(monkeypatch)
 
-    assert parse_payload_headers(heads, offsets, sizes=sizes).overflowed.tolist() == [
+    assert parse_payload_headers(heads, offsets, sizes=sizes).unreadable.tolist() == [
         True
     ]
 
@@ -818,5 +841,6 @@ def test_a_convertip_chunk_loses_a_quarter_without_the_payload_buffer():
     packets, _ = convertip_chunk(11)
     result = parse_split(*packets, withhold=True)
 
-    assert result.overflowed_count == 10
+    assert result.unreadable_count == 10
+    assert result.overflowed_count == 0
     assert result.packet.size == 30
