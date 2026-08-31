@@ -1,3 +1,17 @@
+# [0.8.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.7.2...v0.8.0) (2026-08-31)
+
+
+### Features
+
+* **payload:** report the buffer fault apart from the caller's bound ([7f3b568](https://github.com/Fuse-Technical-Group/pyst2110/commit/7f3b568188224979d5d26b002fb0c3dcde79a667))
+* **payload:** walk a packet's segments across a header-data split ([40e7093](https://github.com/Fuse-Technical-Group/pyst2110/commit/40e70938a720f4e9a5219a3e757ed9c1702458db))
+* **tools:** time a header-data split in the parse benchmark ([0ccfd57](https://github.com/Fuse-Technical-Group/pyst2110/commit/0ccfd57c9feccb06003391ca3833f926c69478dc))
+
+
+### Performance Improvements
+
+* **payload:** read the seam window by column where the cut is one number ([ca70e34](https://github.com/Fuse-Technical-Group/pyst2110/commit/ca70e347fc34457c4826e7235063421078c0aa6e))
+
 ## [0.7.2](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.7.1...v0.7.2) (2026-08-29)
 
 
