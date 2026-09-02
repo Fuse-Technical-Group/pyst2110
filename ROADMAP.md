@@ -132,6 +132,44 @@ carries a number twice and confirm the earliest arrival is still the one kept
 Feed it the `convertip-2022-7-outage` capture and confirm the pair's reported
 loss, and the path differential, are what they were before.
 
+## Packing modes §road:packing-modes
+
+The builder emits the line-tiling subset of General Packing Mode and
+nothing else; the parse reads both modes. A paced transmitter that has to
+choose its packet count for a rate limiter's lattice, and a receiver test
+that has to see a commercial sender's straddling packets, both wait on the
+rest (§spec:packing-modes).
+
+### The frame layout §road:frame-layout
+
+Compute a frame's per-packet segments, header lengths and sample counts for
+any pgroup-multiple payload in General Packing Mode and for the fixed block
+size in Block Packing Mode, in `src/pyst2110/geometry.py`
+(§spec:packing-modes, §spec:geometry).
+
+### Headers for a straddling packet §road:multi-srd-headers
+
+Build and stamp a header block from a layout in `src/pyst2110/transmit.py`
+— the continuation bit, a header length per packet, a short final packet —
+byte-identical to today's block for a tiling payload (§spec:packing-modes,
+§spec:transmit-headers). Depends on §road:frame-layout.
+
+### The offer names the mode §road:packing-mode-offer
+
+Write `PM=2110BPM` for a block-mode layout and `PM=2110GPM` otherwise in
+`src/pyst2110/sdp.py`, and read both back (§spec:packing-modes, §spec:sdp).
+Depends on §road:multi-srd-headers.
+
+**Verify:** Build a 2160p60 YCbCr-4:2:2 10-bit layout at 1370 sample octets
+and confirm 15,136 packets a frame, about a seventh of them two-segment
+with the first segment marked continued, and the last packet short. Stamp
+it, parse the block with `parse_payload_headers` given the payload buffer,
+and confirm every descriptor places inside the raster and the segments
+cover every row exactly once. Build the block-mode layout at the standard
+UDP limit and confirm 1260 sample octets a packet and `PM=2110BPM` in the
+offer. Build 1080p59.94 at 1200 octets and confirm the block is byte for
+byte the one emitted before this section.
+
 ## Future §road:future
 
 - **ipmx**: IPMX is ST 2110 with a different SDP profile and variable
@@ -155,12 +193,6 @@ loss, and the path differential, are what they were before.
   index, so a caller that owns the clock appends them. Worth taking on
   once something here knows what the clock is. A receiver that enforces
   ST 2110-21 section 7.2.3 refuses an offer without them.
-- **transmit-block-packing**: `FrameHeaders` writes one SRD header a
-  packet, which is ST 2110-20's General Packing Mode
-  (`src/pyst2110/transmit.py`). The Block Packing Mode of section 6.3.3
-  packs 7x180 octets and spans sample rows with the continuation bit,
-  which needs a payload size the geometry here does not compute and a
-  multi-SRD builder.
 - **timing-psf-and-field-pairing**: what §spec:timing defers. The
   `segmented` SDP parameter of ST 2110-20 is not parsed, so PsF reads as
   interlaced — which Table 1's 1125-line row covers — rather than as the

@@ -588,9 +588,11 @@ counter, so a transmitter's hundred-thousandth frame is as exact as its
 first: a rate of 60000/1001 advances a half tick a frame, which
 accumulating turns into drift and computing from an index does not.
 
-One SRD header a packet. A payload size that divides a line never straddles
-a row, so the continuation bit stays clear — ST 2110-20's General Packing
-Mode, and what the emitted offer declares (§road:future).
+One SRD header a packet where the payload divides a line, so the
+continuation bit stays clear — the subset of ST 2110-20's General Packing
+Mode the block was first built for. A payload that does not divide a line,
+and Block Packing Mode, are the same block built from a frame layout
+(§spec:packing-modes).
 
 The block is **reused**: stamping writes into the array it returned last
 time. Allocating a frame of headers per frame is the cost the split between
@@ -615,6 +617,90 @@ gap — so the conversion is named rather than left to a caller's arithmetic.
 Interlace is carried rather than refused, the receive path already
 modelling it: the marker ends each field, each field carries its own
 timestamp, and row numbers restart within a field.
+
+## Packing modes §spec:packing-modes
+
+*Status: not started*
+
+ST 2110-20 section 6.3.1 defines two packing modes, requires a sender to
+operate in one and signal it, and requires a receiver to accept both. This
+library declares General Packing Mode and emits the subset of it whose
+payload divides a line: `FrameHeaders` writes one SRD header a packet, so a
+payload that does not tile a row is refused (§spec:transmit-headers). Block
+Packing Mode cannot be emitted at all — its packets carry a fixed 1260
+sample octets and cross rows by design — and a sender that needs a packet
+count a row does not divide has no way to ask. The receive path already
+reads what the transmit path cannot write: a ConvertIP's two-segment
+packets place correctly (§spec:split-segments), so the parse is complete
+against section 6.3 where the builder is not (§req:priorities,
+§req:success).
+
+**Why a sender wants a count a line does not divide.** Packets per frame is
+the one number a hardware pacer's schedule turns on: ST 2110-21's read
+interval is the active period divided by it, and a rate limiter that
+quantises its packet period holds the schedule only where that interval
+lands on the limiter's own lattice. Which counts land is a property of the
+adapter and not of the raster, and a line-tiling count is one of six
+choices at 2160p where any pgroup-multiple payload is one of hundreds. The
+choice is the pacer's; what this library owes it is a header block for
+whichever count it names.
+
+**A frame layout is the unit, and it is per packet.** For a format, a
+payload in sample octets and a packing mode, the library computes the
+frame's layout: for every packet its segments — row, sample offset and
+length — and from them its header length and its sample octets, and the
+packet count that follows. Every packet carries the same sample octets but
+the frame's last, which carries what remains. Where a packet's samples run
+past the end of a row, the row's remainder and the next row's opening are
+two segments, the first marked continued; a packet that ends a row exactly
+has one. So the header length differs between packets, and the layout says
+which. Section 6.2 caps a packet at three headers; a payload shorter than a
+line needs at most two, and one that would need more is refused by name.
+
+- In General Packing Mode any payload that is a whole number of pgroups
+  and fits the declared UDP limit is accepted. Section 6.3.2's guidance —
+  a datagram should not fall under 1000 octets and should sit close to the
+  limit — is the caller's to weigh: a pacer trading a few percent of
+  datagram for a lattice fit is inside the mode, and the number is not
+  second-guessed here.
+- In Block Packing Mode the payload is the largest multiple of 180 octets
+  the UDP limit admits — 1260 at the standard limit, section 6.3.3 — and
+  the offer declares `PM=2110BPM`. The mode is the general layout at a size
+  the standard fixes, and nothing else differs.
+- A payload that tiles a line is the layout with every header one segment
+  long, and the block built for it is byte for byte the block built today.
+
+`FrameHeaders` builds and stamps the block for any layout. Each packet's
+row of the block holds its own header's length of bytes; the row stride is
+the longest header, and a consumer gathering a packet takes the length the
+layout gives it rather than the stride. That is the one thing a consumer
+has to change: a fixed cut between header and payload becomes a cut the
+layout declares per packet, and a fixed datagram becomes one that differs
+by one header between packets and is shorter on the frame's last. Both are
+the layout's to report, so a consumer reads them and derives neither.
+
+The frame's last packet is short rather than padded. Section 6.3.2 permits
+padding at the end of a field or frame and requires it nowhere, and a
+padded packet claims wire time the schedule did not allot.
+
+The sample offset a header carries and the byte offset a consumer fills
+from are §spec:geometry's conversion in the transmit direction: a consumer
+fills a two-segment packet by the two spans the layout names, and the seam
+is the row's end.
+
+Interlace carries through unchanged: rows number within a field, a segment
+never crosses a field, and the layout is computed per field.
+
+*Rejected: a constant datagram with the cut moving inside it.* A second
+header costs six octets, and six is a whole number of pgroups only at
+4:4:4 8-bit and 4:2:2 12-bit; every other format would need a mid-frame
+packet padded, which section 6.2 forbids. The datagram varies, and the
+consumer that writes the IP and UDP lengths carries one prefix per size.
+
+*Rejected: leaving the builder at the tiling subset.* It is what exists,
+and it is why a commercial sender's packetisation cannot be reproduced here
+to test a receiver against, and why a pacer cannot choose its count
+(§req:success).
 
 ## ST 2110-21 timing §spec:timing
 
