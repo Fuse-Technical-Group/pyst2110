@@ -509,6 +509,22 @@ Colorimetry is carried through, not interpreted. What a consumer does with
 `BT2020` is its own concern; this library records which token the SDP said,
 and ST 2110-20 has a token for a colorimetry nobody stated.
 
+**The format is a raster only where the payload is `raw`.** A coded flow's
+`a=fmtp:` names the picture it codes — an ST 2110-22 offer carries a width,
+a height and a depth too — so the format parameters cannot tell a raster
+from a codestream, and read as one, a coded flow sizes frames its packets do
+not hold. Measured: a DeckLink IP 100G sends 2160p as
+`vnd.blackmagic-design.ip10` under a fmtp line reading
+`sampling=YCbCr-4:2:2; depth=10`, and parsed as ST 2110-20 that offer
+described rows a quarter longer than the card sends. RFC 4175 section 7
+puts the payload format in `a=rtpmap` as the encoding name, so the video
+format parse refuses an encoding other than `raw` for the payload type its
+fmtp line describes, and `raw` at a clock other than the 90 kHz ST 2110-20
+section 7.1 requires. Encoding names are case-insensitive (RFC 4855 section
+3). An offer mapping no encoding is read as raw: RFC 4566 asks a dynamic
+payload type for an rtpmap, and whether to refuse its absence is a question
+apart from refusing what an offer says.
+
 A parameter whose absence carries meaning is written only where it differs
 from that meaning. An absent `MAXUDP` *is* the standard limit, so writing
 the default would claim a limit was negotiated when none was.

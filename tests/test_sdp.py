@@ -215,6 +215,72 @@ def test_the_rtp_clock_rate_itself_is_a_frame_rate_the_parse_accepts():
     assert parse_video_format(text).frame_rate == Fraction(90_000)
 
 
+def _offer_with(rtpmap: str, payload_type: int = 96) -> str:
+    """The narrow 1080p59.94 offer above with its rtpmap line replaced."""
+    return _ST2110_20.replace("a=rtpmap:96 raw/90000", rtpmap).replace(
+        "a=fmtp:96", f"a=fmtp:{payload_type}"
+    )
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        # RFC 9134: JPEG XS under ST 2110-22.
+        "jxsv",
+        # A vendor's own compression under ST 2110-22, as a DeckLink IP sends
+        # 2160p while its fmtp line still reads like ST 2110-20's.
+        "vnd.blackmagic-design.ip10",
+    ],
+)
+def test_a_compressed_video_offer_is_not_a_raster(encoding: str):
+    """RFC 4175 section 7 puts the payload format in `a=rtpmap`; the fmtp
+    parameters a width and a depth are read from describe a raster only
+    under `raw`. Read as one, a compressed flow sizes frames that are not
+    there."""
+    with pytest.raises(ValueError, match=f"{encoding}.*raw"):
+        parse_video_format(_offer_with(f"a=rtpmap:96 {encoding}/90000"))
+
+
+def test_the_encoding_name_is_read_without_regard_to_case():
+    """RFC 4855 section 3: encoding names "are case-insensitive"."""
+    assert parse_video_format(_offer_with("a=rtpmap:96 RAW/90000")).width == 1920
+
+
+def test_a_raw_offer_at_another_clock_rate_is_refused():
+    """ST 2110-20 section 7.1: the rtpmap "shall indicate the 90 kHz RTP Clock
+    rate", and every RTP timestamp §spec:timing reads counts at it."""
+    with pytest.raises(ValueError, match="90000"):
+        parse_video_format(_offer_with("a=rtpmap:96 raw/48000"))
+
+
+def test_the_encoding_is_the_one_the_fmtp_payload_type_maps():
+    """A video section may map several payload types; the fmtp line names the
+    one its parameters describe."""
+    text = _offer_with("a=rtpmap:97 jxsv/90000\na=rtpmap:96 raw/90000")
+    assert parse_video_format(text).width == 1920
+    with pytest.raises(ValueError, match="jxsv"):
+        parse_video_format(_offer_with("a=rtpmap:97 jxsv/90000", payload_type=97))
+
+
+def test_another_essences_encoding_does_not_describe_the_video():
+    text = (
+        "m=audio 20010 RTP/AVP 97\n"
+        "a=rtpmap:97 L24/48000/2\n"
+        "m=video 20000 RTP/AVP 96\n"
+        "a=rtpmap:96 raw/90000\n"
+        "a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; "
+        "exactframerate=25; depth=10\n"
+    )
+    assert parse_video_format(text).width == 1920
+
+
+def test_an_offer_mapping_no_encoding_is_read_as_before():
+    """RFC 4566 asks a dynamic payload type for an rtpmap, and an offer that
+    omits it says nothing to refuse: what is refused is an encoding named."""
+    text = _ST2110_20.replace("a=rtpmap:96 raw/90000\n", "")
+    assert parse_video_format(text).width == 1920
+
+
 def test_the_video_format_ignores_another_essence_fmtp():
     """An audio section before the video one must not describe the geometry."""
     text = (
