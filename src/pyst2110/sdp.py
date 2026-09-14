@@ -123,6 +123,11 @@ _DUP_LEGS = 2
 # examples number them; nothing outside the document reads them.
 _DUP_TAGS = ("1", "2")
 
+# RFC 4175 section 7: a payload format's name goes in ``a=rtpmap`` as the
+# encoding name, and ST 2110-20's is ``raw``. RFC 4855 section 3: encoding
+# names "are case-insensitive".
+_RAW_ENCODING = "raw"
+
 # Every character ``str.splitlines()`` starts a new line at. RFC 4566 ends a
 # record with CRLF alone, but a reader that splits the document into lines —
 # as :func:`parse_sdp` does — begins a record at any of these, so a caller's
@@ -426,10 +431,16 @@ def parse_video_format(text: str) -> SdpVideo:
     width, height and rate to know how many packets a frame is and when the
     next one departs; guessing any of them would put the wrong number of
     packets on the wire at the wrong time.
+
+    Also raises where the ``a=rtpmap`` for the payload type the fmtp line
+    describes names an encoding other than ``raw``, or ``raw`` at a clock
+    other than 90 kHz: those parameters describe a raster only under
+    ST 2110-20's encoding. An offer mapping no encoding is read as raw.
     """
     parameters = _format_parameters(text)
     if not parameters:
         raise ValueError("the SDP has no 'a=fmtp:<payload> ...' format line")
+    _require_raw(text)
 
     missing = [name for name in ("width", "height") if name not in parameters]
     if missing:
@@ -503,6 +514,52 @@ def _decimal(text: str) -> bool:
     was read as 3, a value the document does not say.
     """
     return text.isascii() and text.isdigit()
+
+
+def _require_raw(text: str) -> None:
+    """Refuse a video offer whose payload is not ST 2110-20's ``raw``.
+
+    A compressed flow's fmtp line carries a width, a height and a depth too
+    — ST 2110-22 flows name the picture they code — so nothing in the format
+    parameters tells a raster from a codestream. The rtpmap does.
+    """
+    mapping = _video_payload_mapping(text)
+    if mapping is None:
+        return
+    encoding, clock = mapping
+    if encoding.lower() != _RAW_ENCODING:
+        raise ValueError(
+            f"the SDP's video is {encoding!r}, not ST 2110-20's {_RAW_ENCODING!r}: "
+            "its fmtp line describes a coded payload, not a raster"
+        )
+    if not clock.isdigit() or int(clock) != RTP_CLOCK_RATE:
+        raise ValueError(
+            f"the SDP's rtpmap gives raw a {clock!r} clock; ST 2110-20 section "
+            f"7.1 requires {RTP_CLOCK_RATE}"
+        )
+
+
+def _video_payload_mapping(text: str) -> tuple[str, str] | None:
+    """The encoding name and clock rate the video section's ``a=rtpmap``
+    gives the payload type its fmtp line names, or ``None`` where it maps
+    none. The first video section, as :func:`_format_parameters` reads."""
+    _, media = _sections(text)
+    video = next((block for block in media if _is_video(block[0])), None)
+    if video is None:
+        return None
+    fmtp = next((line for line in video if line.startswith("a=fmtp:")), None)
+    if fmtp is None:
+        return None
+    fields = fmtp[len("a=fmtp:") :].split(maxsplit=1)
+    if not fields:
+        return None
+    prefix = f"a=rtpmap:{fields[0]} "
+    rtpmap = next((line for line in video if line.startswith(prefix)), None)
+    if rtpmap is None:
+        return None
+    # <encoding name>/<clock rate>[/<encoding parameters>], RFC 4566 section 6.
+    encoding, _, rest = rtpmap[len(prefix) :].strip().partition("/")
+    return encoding, rest.partition("/")[0]
 
 
 def _format_parameters(text: str) -> dict[str, str]:
