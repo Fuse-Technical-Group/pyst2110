@@ -48,6 +48,10 @@ packages = ["src/pyst2110"]
 # No markers and no deselection: nothing here needs a NIC, a licence or an
 # SDK, so the default selection is the whole suite (SPEC §spec:testing).
 testpaths = ["tests"]
+# A fixture is a conforming offer unless its test says otherwise: a tolerated
+# gap in one is an error here, and a test that means it catches the warning
+# (SPEC §spec:sdp).
+filterwarnings = ["error::pyst2110.sdp.SdpConformanceWarning"]
 
 [tool.hatch.version]
 source = "vcs"

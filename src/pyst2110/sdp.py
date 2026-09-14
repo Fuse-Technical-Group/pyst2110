@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -33,6 +34,7 @@ __all__ = [
     "SENDER_TYPE_NARROW_LINEAR",
     "SENDER_TYPE_WIDE",
     "STANDARD_UDP_SIZE_LIMIT",
+    "SdpConformanceWarning",
     "SdpFlow",
     "SdpVideo",
     "format_dup_sdp",
@@ -127,6 +129,19 @@ _DUP_TAGS = ("1", "2")
 # encoding name, and ST 2110-20's is ``raw``. RFC 4855 section 3: encoding
 # names "are case-insensitive".
 _RAW_ENCODING = "raw"
+
+
+class SdpConformanceWarning(UserWarning):
+    """An offer was read that a conforming sender would not have written.
+
+    Strict in what is sent, tolerant in what is read: every offer this
+    library writes carries what the standards require of a sender, and an
+    offer that omits something is read the one way it can be — and this
+    warning says what was missing and what was assumed. A consumer routes it
+    into its own logging, or makes it an error, with the ``warnings`` module
+    (§spec:sdp).
+    """
+
 
 # Every character ``str.splitlines()`` starts a new line at. RFC 4566 ends a
 # record with CRLF alone, but a reader that splits the document into lines —
@@ -435,7 +450,8 @@ def parse_video_format(text: str) -> SdpVideo:
     Also raises where the ``a=rtpmap`` for the payload type the fmtp line
     describes names an encoding other than ``raw``, or ``raw`` at a clock
     other than 90 kHz: those parameters describe a raster only under
-    ST 2110-20's encoding. An offer mapping no encoding is read as raw.
+    ST 2110-20's encoding. An offer mapping no encoding is read as raw at
+    90 kHz, with a :class:`SdpConformanceWarning`.
     """
     parameters = _format_parameters(text)
     if not parameters:
@@ -525,6 +541,14 @@ def _require_raw(text: str) -> None:
     """
     mapping = _video_payload_mapping(text)
     if mapping is None:
+        warnings.warn(
+            "the SDP maps no encoding to its video payload type with an "
+            f"a=rtpmap line; ST 2110-20 section 7.1 requires "
+            f"{_RAW_ENCODING}/{RTP_CLOCK_RATE}, and it is read as that",
+            SdpConformanceWarning,
+            # Past this helper and parse_video_format, to the caller's line.
+            stacklevel=3,
+        )
         return
     encoding, clock = mapping
     if encoding.lower() != _RAW_ENCODING:
