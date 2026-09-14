@@ -1,3 +1,10 @@
+## [0.8.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.8.0...v0.8.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **sdp:** refuse a video format whose payload is not raw ([#19](https://github.com/Fuse-Technical-Group/pyst2110/issues/19)) ([06b76c1](https://github.com/Fuse-Technical-Group/pyst2110/commit/06b76c1698980525b61ad8528ab37998dd06529e))
+
 # [0.8.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.7.2...v0.8.0) (2026-08-31)
 
 
