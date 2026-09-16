@@ -487,7 +487,7 @@ sampling, and interprets none (§req:constraints).
 
 ## SDP §spec:sdp
 
-*Status: complete*
+*Status: in progress*
 
 Enough of RFC 4566 and ST 2110-20's `a=fmtp:` to name a flow — connection
 address, media port, source filter — and its video format: width, height,
