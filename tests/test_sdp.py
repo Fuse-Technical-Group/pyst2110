@@ -9,12 +9,14 @@ documents (§spec:testing).
 
 from __future__ import annotations
 
+import warnings
 from fractions import Fraction
 from typing import Any
 
 import pytest
 
 from pyst2110.sdp import (
+    SdpConformanceWarning,
     SdpFlow,
     SdpVideo,
     format_dup_sdp,
@@ -274,11 +276,25 @@ def test_another_essences_encoding_does_not_describe_the_video():
     assert parse_video_format(text).width == 1920
 
 
-def test_an_offer_mapping_no_encoding_is_read_as_before():
-    """RFC 4566 asks a dynamic payload type for an rtpmap, and an offer that
-    omits it says nothing to refuse: what is refused is an encoding named."""
+def test_an_offer_mapping_no_encoding_is_read_as_raw_and_says_so():
+    """ST 2110-20 section 7.1 binds the sender to declare `raw` at 90 kHz.
+    An offer that does not has one reading, which is taken — and the parse
+    says it took it, rather than passing the gap on unremarked."""
     text = _ST2110_20.replace("a=rtpmap:96 raw/90000\n", "")
-    assert parse_video_format(text).width == 1920
+    with pytest.warns(SdpConformanceWarning, match="rtpmap"):
+        assert parse_video_format(text).width == 1920
+
+
+@pytest.mark.parametrize("dup", [False, True], ids=["single", "dup"])
+def test_an_offer_we_emit_is_read_without_a_conformance_warning(dup: bool):
+    """Strict in what is sent: every offer this library writes is one its own
+    parse takes without remark (ST 2110-20 section 7.1)."""
+    text = (
+        format_dup_sdp(_FLOW, _SECOND_LEG, _VIDEO) if dup else format_sdp(_FLOW, _VIDEO)
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SdpConformanceWarning)
+        assert parse_video_format(text) == _VIDEO
 
 
 def test_the_video_format_ignores_another_essence_fmtp():
@@ -288,6 +304,7 @@ def test_the_video_format_ignores_another_essence_fmtp():
         "m=audio 20010 RTP/AVP 97\n"
         "a=fmtp:97 channel-order=SMPTE2110.(ST)\n"
         "m=video 20000 RTP/AVP 96\n"
+        "a=rtpmap:96 raw/90000\n"
         "a=fmtp:96 sampling=YCbCr-4:2:2; width=1920; height=1080; "
         "exactframerate=25; depth=10\n"
     )

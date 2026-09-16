@@ -521,9 +521,22 @@ puts the payload format in `a=rtpmap` as the encoding name, so the video
 format parse refuses an encoding other than `raw` for the payload type its
 fmtp line describes, and `raw` at a clock other than the 90 kHz ST 2110-20
 section 7.1 requires. Encoding names are case-insensitive (RFC 4855 section
-3). An offer mapping no encoding is read as raw: RFC 4566 asks a dynamic
-payload type for an rtpmap, and whether to refuse its absence is a question
-apart from refusing what an offer says.
+3).
+
+**Strict in what is written, tolerant in what is read, and saying so.**
+ST 2110-20 binds the sender: section 7.1 declares the stream as media type
+`video` and subtype `raw`, and "the rtpmap clause of the SDP shall indicate
+the 90 kHz RTP Clock rate"; section 7.2 opens "Senders shall include" its
+eight parameters. It gives receivers defaults only for section 7.3's
+optional parameters. So every offer this library writes carries all of it,
+asserted line by line against vectors written from the standard, and an
+offer read without an rtpmap is taken the one way it can be — as
+`raw/90000` — with an `SdpConformanceWarning` naming what was missing. The
+suite makes that warning an error, so a fixture is a conforming offer
+unless its test says otherwise. What an offer contradicts is not
+tolerated: an encoding or a clock the parse would misread is refused. The
+required parameters the parse still defaults without a word are
+§road:sdp-conformance's.
 
 A parameter whose absence carries meaning is written only where it differs
 from that meaning. An absent `MAXUDP` *is* the standard limit, so writing

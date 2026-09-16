@@ -633,6 +633,7 @@ def huge_video() -> SdpVideo:
     """The largest format ST 2110-20 and this parse between them permit."""
     return parse_video_format(
         "v=0\r\nm=video 20000 RTP/AVP 96\r\nc=IN IP4 239.100.0.1\r\n"
+        "a=rtpmap:96 raw/90000\r\n"
         f"a=fmtp:96 {_HUGE}; TP={SENDER_TYPE_NARROW}\r\n"
     )
 

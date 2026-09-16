@@ -35,6 +35,7 @@ from pyst2110.sdp import SENDER_TYPE_NARROW_LINEAR as SENDER_TYPE_NARROW_LINEAR
 from pyst2110.sdp import SENDER_TYPE_WIDE as SENDER_TYPE_WIDE
 from pyst2110.sdp import SENDER_TYPES as SENDER_TYPES
 from pyst2110.sdp import STANDARD_UDP_SIZE_LIMIT as STANDARD_UDP_SIZE_LIMIT
+from pyst2110.sdp import SdpConformanceWarning as SdpConformanceWarning
 from pyst2110.sdp import SdpFlow as SdpFlow
 from pyst2110.sdp import SdpVideo as SdpVideo
 from pyst2110.sdp import format_dup_sdp as format_dup_sdp
@@ -76,6 +77,7 @@ __all__ = [
     "PayloadHeaders",
     "RtpHeaders",
     "Schedule",
+    "SdpConformanceWarning",
     "SdpFlow",
     "SdpVideo",
     "SequenceTracker",

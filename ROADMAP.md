@@ -170,6 +170,26 @@ UDP limit and confirm 1260 sample octets a packet and `PM=2110BPM` in the
 offer. Build 1080p59.94 at 1200 octets and confirm the block is byte for
 byte the one emitted before this section.
 
+## Conformance of what is read §road:sdp-conformance
+
+The video format parse says when it tolerates a missing rtpmap, and takes
+an offer's other gaps without a word (§spec:sdp).
+
+### Every tolerated gap said, every unsafe one refused §road:sdp-tolerated-gaps
+
+`parse_video_format` in `src/pyst2110/sdp.py` fills in parameters
+ST 2110-20 section 7.2 and ST 2110-21 section 8.1 require of a sender: a
+missing `TP` reads as Narrow and a missing `colorimetry` as `UNSPECIFIED`,
+and `PM` and `SSN` are never read. Each has one reading, and shall be taken
+with an `SdpConformanceWarning` naming it. Two have none: a missing `depth`
+reads as 10 and a missing `sampling` as the empty string, and a guessed
+depth sizes every row wrong, so both shall be refused.
+
+**Verify:** An offer missing each of `TP`, `colorimetry`, `PM` and `SSN`
+parses with one `SdpConformanceWarning` naming it; one missing `depth` or
+`sampling` raises naming it; and every fixture in the suite parses under the
+suite's error filter, given what it lacked.
+
 ## Future §road:future
 
 - **ipmx**: IPMX is ST 2110 with a different SDP profile and variable
