@@ -1,3 +1,10 @@
+# [0.9.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.8.1...v0.9.0) (2026-09-16)
+
+
+### Features
+
+* **sdp:** say when an offer without an rtpmap is read as raw ([e1087d7](https://github.com/Fuse-Technical-Group/pyst2110/commit/e1087d7fea1d8572c14541074d47581ce80f2a1c))
+
 ## [0.8.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.8.0...v0.8.1) (2026-09-14)
 
 
