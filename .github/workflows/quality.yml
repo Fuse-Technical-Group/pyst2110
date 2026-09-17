@@ -1,33 +1,62 @@
 name: quality
 
-# The two checks the `Flywheel - review` ruleset requires by name —
-# `markdownlint` and `shellcheck` — and which nothing in this repository
-# emitted, so every pull request into the default branch sat at "Expected —
-# Waiting for status to be reported" and could not merge. The job keys below
-# ARE the check names the ruleset matches; renaming one silently re-blocks
-# the branch.
+# The required checks are the two summary jobs at the end, `quality /
+# governance` and `quality / correctness`; everything above them is a class
+# job they depend on. The rulesets require the summary names, so class jobs
+# can be added or renamed without touching a ruleset.
 #
-# Neither ran here under those names: markdownlint only as a step inside the
-# reusable governance-lint workflow (which reports as `governance / lint`),
-# and shellcheck not at all — `tools/ci.sh` lints Python, not itself. A step's
-# name is not a check's name, which is why the ruleset never saw them.
+# Class jobs keep their earlier keys — `governance`, `markdownlint`,
+# `shellcheck`, `gate` — so those check names still report while older
+# rulesets that match them remain. A step's name is not a check's name: a
+# ruleset only sees job names.
+#
+# Nothing here needs a NIC, a licence or a vendor SDK — that is the whole
+# point of the split (SPEC §spec:scope-boundary), and a workflow that stays
+# green on a plain runner is the standing proof of it.
 on:
+  push:
+    branches: [main]
   pull_request:
   merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  # Skip on Flywheel's own release and back-merge commits, which carry
-  # generated content rather than reviewable changes. The guard is per job so
-  # each required check still resolves rather than hanging — a skipped job
-  # satisfies a required context, an absent one does not.
+  # Flywheel's release, back-merge and promotion commits carry generated
+  # content rather than reviewable changes, so class jobs skip on them and the
+  # summary jobs still pass.
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      derived_release_commit: ${{ steps.classify.outputs.derived_release_commit }}
+      promotion_pr: ${{ steps.classify.outputs.promotion_pr }}
+    steps:
+      - id: classify
+        uses: point-source/flywheel/classify@59758d1940ebe054ce9fdd4b7a7dc79a0cf235e0 # v2.1.0
+
+  # Calls notation's reusable governance lint: Vale prose linting over SPEC.md
+  # and REQUIREMENTS.md, markdownlint-cli2 over the governance docs, SPEC.md
+  # status-line validation, the README heading profile, and the §slug
+  # heading-addressing grammar. The job key stays `governance`, so it also
+  # reports as `governance / lint`.
+  governance:
+    needs: classify
+    if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
+    # Pinned to the commit behind notation--v0.2.12. notation's release tags
+    # use a notation--v* prefix, which Dependabot may not auto-track — bump
+    # manually if it does not.
+    uses: repentsinner/symphonize/.github/workflows/governance-lint.yml@1025d00f32bb7ffdfcddf0385be8e0935559b8c9 # notation--v0.2.12
+    with:
+      readme-type: library
+
   markdownlint:
-    if: >-
-      !contains(github.event.pull_request.title || '', ': promote ') &&
-      !startsWith(github.event.merge_group.head_commit.message || '', 'chore(release):') &&
-      !startsWith(github.event.merge_group.head_commit.message || '', 'chore: back-merge')
+    needs: classify
+    if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,11 +69,28 @@ jobs:
         with:
           globs: "*.md"
 
+  # One job on a bare runner: ruff, mypy and pytest.
+  gate:
+    needs: classify
+    if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned per the convention the flywheel workflows set; the trailing
+      # # vX.Y.Z comment is mandatory for human review.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: pyproject.toml
+
+      # uv reads .python-version and fetches the interpreter itself.
+      # tools/ci.sh is the same entry point developers run locally.
+      - run: bash tools/ci.sh
+
   shellcheck:
-    if: >-
-      !contains(github.event.pull_request.title || '', ': promote ') &&
-      !startsWith(github.event.merge_group.head_commit.message || '', 'chore(release):') &&
-      !startsWith(github.event.merge_group.head_commit.message || '', 'chore: back-merge')
+    needs: classify
+    if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -54,3 +100,63 @@ jobs:
       - uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
         with:
           severity: error
+
+  actionlint:
+    needs: classify
+    if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Digest copied from the release's checksums file, so a replaced
+      # release asset fails here rather than running.
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.12
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -sfLo "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum -c -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+
+      # actionlint skips run: blocks silently when shellcheck is absent, so
+      # its absence has to fail the job rather than pass it.
+      - name: Lint workflows
+        run: |
+          command -v shellcheck
+          "$RUNNER_TEMP/actionlint"
+
+  # Summary jobs carry the required check names. Each runs whatever its
+  # dependencies' outcome, because GitHub counts a skipped required check as
+  # passing. classify is a dependency too: if it fails, the class jobs skip.
+  quality-governance:
+    name: quality / governance
+    needs: [classify, governance, markdownlint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a governance job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          exit 1
+
+  quality-correctness:
+    name: quality / correctness
+    needs: [classify, gate, shellcheck, actionlint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail when a correctness job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$NEEDS"
+          exit 1
