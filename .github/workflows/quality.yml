@@ -64,7 +64,7 @@ jobs:
       # repositories. `docs/` is deliberately outside the gate: it holds
       # measurement write-ups whose tables markdownlint's line rules fight,
       # and widening the glob is a lint-hardening pass rather than a
-      # merge-unblocking one. Config is .markdownlint.json.
+      # merge-unblocking one. Config is .markdownlint-cli2.jsonc.
       - uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24
         with:
           globs: "*.md"

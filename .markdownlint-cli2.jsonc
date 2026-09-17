@@ -12,6 +12,18 @@
   // (.github/workflows/quality.yml), so these matter only to a developer
   // running the tool by hand — which is exactly when an ignore list earns its
   // place.
+  // Rule disables live here, not in a separate .markdownlint.json: rumdl,
+  // the governance lint's engine, reads only the first markdownlint config it
+  // finds, so a second file is silently ignored there.
+  "config": {
+    "MD004": false,
+    "MD012": false,
+    "MD013": false,
+    "MD022": false,
+    "MD024": false,
+    "MD036": false,
+    "MD060": false
+  },
   "ignores": [
     "CHANGELOG.md",
     "node_modules/**",
