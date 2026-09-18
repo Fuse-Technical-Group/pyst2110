@@ -1,3 +1,10 @@
+## [0.9.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.9.0...v0.9.1) (2026-09-18)
+
+
+### Bug Fixes
+
+* **packaging:** publish each release to PyPI ([#26](https://github.com/Fuse-Technical-Group/pyst2110/issues/26)) ([fed2a2d](https://github.com/Fuse-Technical-Group/pyst2110/commit/fed2a2dd2c50b4dab399a81ef355a656c212bd6b))
+
 # [0.9.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.8.1...v0.9.0) (2026-09-16)
 
 
