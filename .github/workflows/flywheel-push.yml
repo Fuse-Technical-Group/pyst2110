@@ -1,20 +1,25 @@
 name: Flywheel — Push
+
 on:
   push:
     branches: ["**"]
+
 concurrency:
   group: flywheel-push-${{ github.ref_name }}
   cancel-in-progress: false
+
 jobs:
   release:
+    # Flywheel mints its own App installation token for every write, so the
+    # built-in token needs read only. Without this block the job inherits the
+    # repository default, which on older repos is write on everything.
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
-      # SHA-pinned per SPEC §10 (no floating tags). Bump via Dependabot;
-      # the trailing # vX.Y.Z comment is mandatory for human review.
-      # v2 invokes the composite action directly — the @<ref> resolves the
-      # dispatcher, bundled scripts, and semantic-release plugins together, so
-      # the v1 flywheel-version input is gone. v2.0.1 is the floor: its #229
-      # fix lets external adopters resolve the composite (v2.0.0 cannot).
+      # SHA-pinned, not @v2: this action receives a GitHub App private key,
+      # and a floating tag lets its repository repoint that credential at new
+      # code without review. Bump the pin deliberately.
       - uses: point-source/flywheel@59758d1940ebe054ce9fdd4b7a7dc79a0cf235e0 # v2.1.0
         with:
           event: push
