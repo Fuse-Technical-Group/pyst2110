@@ -1,0 +1,89 @@
+name: Publish
+
+# The release, uploaded to PyPI, so a consumer declares `pyst2110>=X.Y` like
+# any other requirement. A `git+https://` direct reference instead needs git
+# in every image that installs a consumer's wheel, and it pins one exact URL,
+# so two consumers naming different tags cannot resolve together.
+#
+# Authenticated by Trusted Publishing: PyPI trusts this file's name and the
+# `pypi` environment, and no token is stored anywhere. Renaming either breaks
+# the upload until the publisher on PyPI is updated to match.
+#
+# Triggered by a published release. The tag is the only place the version
+# exists (hatch-vcs derives it), so a distribution can only be named from one.
+on:
+  release:
+    types: [published]
+  # Re-publishing a tag does not require cutting a release, so a run that
+  # fails after the release exists can be retried. PyPI refuses a file it
+  # already holds, so a retry after a partial upload uploads nothing twice.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v0.9.1"
+        required: true
+        type: string
+
+concurrency:
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Builds with no publishing credential in reach. Only the job below mints
+  # the OIDC token, and it runs no project code.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      # SHA-pinned per the convention the flywheel workflows set; the trailing
+      # # vX.Y.Z comment is mandatory for human review.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The released tree, not the default branch, which a release event
+          # checks out by default. The full history carries the tag hatch-vcs
+          # reads the version from.
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Build the sdist and wheel
+        run: uv build
+
+      # A tag the build did not stamp would upload as a version nobody asked
+      # for. The filename carries the metadata version, so check it here.
+      - name: Check the version matches the tag
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -eu
+          version="${TAG#v}"
+          ls dist
+          test -f "dist/pyst2110-${version}.tar.gz"
+          test -f "dist/pyst2110-${version}-py3-none-any.whl"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    needs: build
+    runs-on: ubuntu-latest
+    # Required reviewers gate this environment, so an upload waits for a human.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pyst2110/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
