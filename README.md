@@ -34,7 +34,7 @@ uv add "pyst2110 @ git+https://github.com/Fuse-Technical-Group/pyst2110@v0.2.0"
 from pyst2110 import parse_sdp, parse_video_format
 
 offer = open("flow.sdp").read()
-flow = parse_sdp(offer)          # destination address, port, source filter
+flow = parse_sdp(offer)  # destination address, port, source filter
 video = parse_video_format(offer)  # width, height, rate, sampling, depth
 ```
 
@@ -62,8 +62,8 @@ from pyst2110 import FrameHeaders, choose_payload_size, format_sdp, max_payload_
 payload_size = choose_payload_size(video, max_payload_size(video))
 frame = FrameHeaders(video, payload_size, ssrc=0x1234ABCD)
 for index in range(frames):
-    headers = frame.stamp(index)   # (packets, 20) uint8, one row per packet
-    ...                            # send each header with frame.frame_offset_octets
+    headers = frame.stamp(index)  # (packets, 20) uint8, one row per packet
+    ...  # send each header with frame.frame_offset_octets
 offer = format_sdp(flow, video, session_name="my sender")  # what was sent
 ```
 
