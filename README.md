@@ -21,11 +21,10 @@ binding, no NIC and no licence, so it runs anywhere CI does.
 
 ## Install
 
-A git dependency pinned by tag. Publication to PyPI waits for a consumer
-depending on a released version (§road:pypi):
+From PyPI:
 
 ```bash
-uv add "pyst2110 @ git+https://github.com/Fuse-Technical-Group/pyst2110@v0.2.0"
+uv add pyst2110
 ```
 
 ## Usage

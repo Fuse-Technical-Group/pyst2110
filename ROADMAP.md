@@ -3,16 +3,6 @@
 Derived from [SPEC.md](SPEC.md). Sections are in build-dependency order.
 Completed work is removed; presence here means the work is not done.
 
-## Publication §road:publish
-
-### PyPI release §road:pypi
-
-Publish to PyPI under MIT with a trusted-publisher workflow
-(§spec:packaging). Deferred until a consumer depends on a released
-version rather than a git ref — the split is real once the dependency is
-a version, and nothing is served by publishing before the surface has
-one consumer's use behind it.
-
 ## Key signals §road:key-signals
 
 ### Key pgroup geometry §road:key-geometry
