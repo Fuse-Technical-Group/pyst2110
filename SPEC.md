@@ -925,11 +925,14 @@ reads as loss and would prove the opposite of what it was taken for.
 
 ## Packaging §spec:packaging
 
-*Status: in progress*
+*Status: complete*
 
 A pure-Python package with numpy as its only runtime dependency, published
-under MIT. No build step and no compiled extension: the parses are numpy
-expressions, and a C extension would trade the portability that makes this
+under MIT. Each release uploads an sdist and a wheel to PyPI through Trusted
+Publishing, so a consumer declares a version rather than a git ref.
+
+No build step and no compiled extension: the parses are numpy expressions,
+and a C extension would trade the portability that makes this
 library usable from a capture-analysis script for a speed nothing has yet
 asked for. A consumer has since asked, and the answer was a numpy expression
 that reads the chunk differently rather than a language change
