@@ -163,6 +163,12 @@ _RP_GROUPS = (_PHASED, MULTI_2SI, MULTI_SD)
 # differ only in whether they spell it out carry the same transfer.
 _DEFAULT_TCS = "SDR"
 
+# ST 2110-20 section 7.4.1 spells every 4:2:0 sampling with this suffix:
+# YCbCr-4:2:0, CLYCbCr-4:2:0 and ICtCp-4:2:0.
+_420_SUFFIX = "-4:2:0"
+# A 4:2:0 pgroup spans two sample rows (section 6.2.5).
+_420_ROWS = 2
+
 # RFC 4175 section 7: a payload format's name goes in ``a=rtpmap`` as the
 # encoding name, and ST 2110-20's is ``raw``. RFC 4855 section 3: encoding
 # names "are case-insensitive".
@@ -383,7 +389,9 @@ def parse_group_sdp(text: str) -> SdpGroup:
 
     Raises ``ValueError`` naming the cause for constituents of unequal
     format, which have no defined essence raster; for interlaced ones, the RP
-    defining no field structure under division; for two constituents naming
+    defining no field structure under division; for 4:2:0 constituents under
+    ``MULTI-2SI``, which makes 4:2:2 sub-images of a 4:2:0 essence, and 4:2:0
+    ones of odd height under ``MULTI-SD``; for two constituents naming
     one address, port and sender, which no receiver can tell apart; for the
     temporal ``PHASED`` division and for ST 2022-7 over a group, neither of
     which is modelled; and for a document carrying no group, which
@@ -447,6 +455,7 @@ def parse_group_sdp(text: str) -> SdpGroup:
         division=division,
         count=len(tags),
     )
+    _check_divided_sampling(video, division)
     return SdpGroup(division, flows, video)
 
 
@@ -518,6 +527,34 @@ def _shared_format(
             stacklevel=3,
         )
     return first
+
+
+def _check_divided_sampling(video: SdpVideo, division: str) -> None:
+    """Refuse a 4:2:0 sub-image no RP 2110-23 division makes.
+
+    RP 2110-23 section 5.2.3 performs two-sample interleave as SMPTE ST 425-5
+    and ST 2082-12 define it, and both make every sub-image of a 4:2:0
+    source 4:2:2 (ST 425-5:2019 section 5.2.1, ST 2082-12:2019 section 4.1):
+    even essence lines go to two constituents and odd lines to the other
+    two, so no constituent holds the row pairs a 4:2:0 pgroup spans. Square
+    division keeps rows contiguous, so its sub-image is a 4:2:0 raster, and
+    one of odd height ends in half a pair (ST 2110-20 section 6.2.2).
+    """
+    if not video.sampling.endswith(_420_SUFFIX):
+        return
+    if division == MULTI_2SI:
+        raise ValueError(
+            f"{MULTI_2SI} constituents cannot be sampling={video.sampling}: "
+            f"two-sample interleave makes 4:2:2 sub-images of a 4:2:0 essence "
+            f"(SMPTE ST 425-5 section 5.2.1, ST 2082-12 section 4.1), so "
+            f"declare the constituents 4:2:2"
+        )
+    if video.height % _420_ROWS:
+        raise ValueError(
+            f"a {video.sampling} sub-image of height {video.height} ends in "
+            f"half a row pair; {division} needs whole 4:2:0 pgroups, which "
+            f"span two rows (ST 2110-20 section 6.2.5)"
+        )
 
 
 def _label(name: str) -> str:
@@ -720,7 +757,8 @@ def parse_video_format(text: str) -> SdpVideo:
     next one departs; guessing any of them would put the wrong number of
     packets on the wire at the wrong time.
 
-    Also raises where the ``a=rtpmap`` for the payload type the fmtp line
+    Also raises for interlaced 4:2:0, which ST 2110-20 section 6.2.5 does
+    not define, and where the ``a=rtpmap`` for the payload type the fmtp line
     describes names an encoding other than ``raw``, or ``raw`` at a clock
     other than 90 kHz: those parameters describe a raster only under
     ST 2110-20's encoding. An offer mapping no encoding is read as raw at
@@ -789,16 +827,19 @@ def _video_format(
     # assumed value".
     sample_range = parameters.get("RANGE", RANGE_NARROW)
     _validate_range(sample_range, colorimetry)
+    sampling = parameters.get("sampling", "")
+    # A flag with no value: SMPTE ST 2110-20 writes bare "interlace".
+    interlaced = "interlace" in parameters
+    _progressive_420(sampling, interlaced)
 
     video = SdpVideo(
         width=width,
         height=height,
         frame_rate=frame_rate,
         depth=int(parameters.get("depth", 10)),
-        sampling=parameters.get("sampling", ""),
+        sampling=sampling,
         colorimetry=colorimetry,
-        # A flag with no value: SMPTE ST 2110-20 writes bare "interlace".
-        interlaced="interlace" in parameters,
+        interlaced=interlaced,
         max_udp=max_udp,
         sender_type=sender_type,
         tr_offset_us=tr_offset_us,
@@ -1111,8 +1152,9 @@ def format_group_sdp(
 
     Raises ``ValueError`` for a count other than 4 or 16, for ``PHASED``, for
     an interlaced format, for a sub-image the division cannot have cut from
-    an essence, for two constituents on one multicast address, which section
-    5.6 forbids, and for two that name one address, port and sender.
+    an essence, for a 4:2:0 sub-image under ``MULTI-2SI`` or of odd height,
+    for two constituents on one multicast address, which section 5.6
+    forbids, and for two that name one address, port and sender.
     """
     if division == _PHASED:
         raise ValueError(
@@ -1134,6 +1176,7 @@ def format_group_sdp(
     sub_image_size(
         video.width * side, video.height * side, division=division, count=count
     )
+    _check_divided_sampling(video, division)
     seen: set[SdpFlow] = set()
     multicast: set[str] = set()
     for flow in flows:
@@ -1292,6 +1335,7 @@ def _media_type_parameters(video: SdpVideo, sender_type: str | None) -> str:
     if video.cmax is not None:
         _integer(video.cmax, "CMAX", 1, _MAX_CMAX)
     _validate_range(video.range, video.colorimetry)
+    _progressive_420(video.sampling, video.interlaced)
 
     parameters = [
         f"sampling={video.sampling}",
@@ -1367,6 +1411,19 @@ def _validate_range(value: str, colorimetry: str) -> None:
         raise ValueError(
             f"a RANGE of {value!r} is not one of the {list(allowed)} ST 2110-20 "
             f"section 7.3 allows{context}"
+        )
+
+
+def _progressive_420(sampling: str, interlaced: bool) -> None:
+    """Refuse interlaced 4:2:0, on the way in as on the way out.
+
+    ST 2110-20 section 6.2.5: "The 4:2:0 sampling system shall only be
+    applied to progressive scan images transmitted in a progressive manner."
+    """
+    if interlaced and sampling.endswith(_420_SUFFIX):
+        raise ValueError(
+            f"sampling={sampling} with interlace is not a format: ST 2110-20 "
+            f"section 6.2.5 applies 4:2:0 to progressive video only"
         )
 
 

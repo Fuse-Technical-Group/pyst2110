@@ -1268,3 +1268,31 @@ def test_an_emitted_dup_offer_parses_back_to_the_two_legs_it_described(
     """The additional property, not the evidence: reader and writer agree."""
     text = format_dup_sdp(first, second, _VIDEO, any_source=any_source)
     assert parse_dup_sdp(text) == (first, second)
+
+
+# --- ST 2110-20 section 6.2.5: 4:2:0 is progressive only -------------------
+#
+# "The 4:2:0 sampling system shall only be applied to progressive scan images
+# transmitted in a progressive manner. This sampling system does not apply to
+# PsF or interlaced video essence."
+
+
+@pytest.mark.parametrize("sampling", ["YCbCr-4:2:0", "CLYCbCr-4:2:0", "ICtCp-4:2:0"])
+def test_an_interlaced_420_offer_is_refused_on_the_way_in(sampling: str):
+    text = _ST2110_20.replace("sampling=YCbCr-4:2:2", f"sampling={sampling}")
+    assert parse_video_format(text).sampling == sampling
+    with pytest.raises(ValueError, match=r"6\.2\.5"):
+        parse_video_format(text.rstrip() + "; interlace\n")
+
+
+@pytest.mark.parametrize("sampling", ["YCbCr-4:2:0", "CLYCbCr-4:2:0", "ICtCp-4:2:0"])
+def test_an_interlaced_420_offer_is_not_written(sampling: str):
+    with pytest.raises(ValueError, match=r"6\.2\.5"):
+        format_sdp(_FLOW, video(sampling=sampling, interlaced=True))
+    described = video(sampling=sampling)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described
+
+
+def test_interlace_beside_any_other_sampling_is_still_carried():
+    described = video(sampling="YCbCr-4:2:2", interlaced=True)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described

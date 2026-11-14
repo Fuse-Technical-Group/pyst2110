@@ -14,27 +14,33 @@ These are round trips and arithmetic identities, the additional property of
 
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 import numpy as np
 import pytest
 
 from pyst2110 import (
+    MULTI_2SI,
+    MULTI_SD,
     SdpFlow,
     SdpVideo,
     choose_payload_size,
     fits_raster,
+    format_group_sdp,
     format_sdp,
     frame_bytes,
     line_bytes,
     packets_per_frame,
     packets_per_line,
+    parse_group_sdp,
     parse_payload_headers,
     parse_rtp,
     parse_video_format,
     pgroup,
     pgroup_rows,
     raster_offset,
+    sub_image_size,
 )
 from pyst2110.transmit import PACKET_HEADER_SIZE, FrameHeaders, max_payload_size
 
@@ -221,3 +227,67 @@ def test_a_420_height_the_row_pair_does_not_divide_is_refused(
         frame_bytes(video)
     with pytest.raises(ValueError, match=f"height of {height} is not a whole"):
         FrameHeaders(video, pgroup(video)[0])
+
+
+# --- 4:2:0 under RP 2110-23 division -------------------------------------
+#
+# Square division keeps a 4:2:0 essence's rows contiguous, so each sub-image
+# is a 4:2:0 raster of its own and runs the round trip above. Two-sample
+# interleave makes 4:2:2 sub-images of a 4:2:0 source (ST 425-5:2019 section
+# 5.2.1), so a 4:2:0 constituent under it is refused.
+
+_420_FORMATS = [one for one in _FORMATS if one[2] == "4:2:0"]
+_SENDER = "192.0.2.1"
+
+
+def _group_flows(count: int) -> tuple[SdpFlow, ...]:
+    return tuple(SdpFlow(f"239.10.0.{n}", 20000, _SENDER) for n in range(count))
+
+
+@pytest.mark.parametrize(
+    ("essence", "count"),
+    [((3840, 2160), 4), ((7680, 4320), 16), ((4096, 2164), 4), ((2048, 856), 16)],
+    ids=["2160p-4", "4320p-16", "4096x2164-4", "2048x856-16"],
+)
+@pytest.mark.parametrize("entry", _420_FORMATS, ids=_format_id)
+def test_a_square_divided_420_essence_round_trips_per_constituent(
+    entry: tuple[str, int, str], essence: tuple[int, int], count: int
+):
+    sampling, depth, family = entry
+    side = math.isqrt(count)
+    sub_width, sub_height = sub_image_size(*essence, division=MULTI_SD, count=count)
+    sub_image = _video(sampling, depth, sub_width, sub_height)
+    flows = _group_flows(count)
+    group = parse_group_sdp(format_group_sdp(flows, sub_image, division=MULTI_SD))
+    assert group.video == sub_image
+    assert (group.essence_width, group.essence_height) == essence
+    assert sub_width * side == essence[0]
+    _check_round_trip(sub_image, family)
+
+
+@pytest.mark.parametrize(
+    ("essence", "count"),
+    [((1920, 2162), 4), ((3840, 4324), 16), ((1024, 6), 4)],
+    ids=["1920x2162-4", "3840x4324-16", "1024x6-4"],
+)
+@pytest.mark.parametrize("entry", _420_FORMATS, ids=_format_id)
+def test_a_420_essence_quartered_into_odd_height_sub_images_is_refused(
+    entry: tuple[str, int, str], essence: tuple[int, int], count: int
+):
+    sampling, depth, _ = entry
+    sub_width, sub_height = sub_image_size(*essence, division=MULTI_SD, count=count)
+    assert sub_height % 2
+    sub_image = _video(sampling, depth, sub_width, sub_height)
+    with pytest.raises(ValueError, match=f"{sub_height}"):
+        format_group_sdp(_group_flows(count), sub_image, division=MULTI_SD)
+
+
+@pytest.mark.parametrize("count", [4, 16])
+@pytest.mark.parametrize("entry", _420_FORMATS, ids=_format_id)
+def test_a_420_essence_under_two_sample_interleave_is_refused(
+    entry: tuple[str, int, str], count: int
+):
+    sampling, depth, _ = entry
+    sub_image = _video(sampling, depth, 1920, 1080)
+    with pytest.raises(ValueError, match="ST 425-5"):
+        format_group_sdp(_group_flows(count), sub_image, division=MULTI_2SI)

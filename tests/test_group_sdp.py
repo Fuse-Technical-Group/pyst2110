@@ -386,3 +386,59 @@ def test_every_constituent_is_validated_as_a_single_flow_offer_is():
     flows = (*_FLOWS[:3], SdpFlow("239.10.0.4", 20000))
     with pytest.raises(ValueError, match="any_source"):
         format_group_sdp(flows, _SUB_IMAGE)
+
+
+# --- 4:2:0 under division ----------------------------------------------------
+#
+# RP 2110-23 section 5.2.3 splits by 2SI "as per SMPTE ST 425-5" and, for
+# 4320 lines, "as described in SMPTE ST 2082-12". ST 425-5:2019 section 5.2.1
+# deals even essence lines to sub-images 1 and 2 and odd ones to 3 and 4, and
+# makes every sub-image of a 4:2:0 source 4:2:2; ST 2082-12:2019 section 4.1
+# does the same at 4320 lines. So no 2SI constituent is 4:2:0. Square
+# division keeps rows contiguous, so its sub-images stay 4:2:0, and each has
+# to be whole row pairs (ST 2110-20 sections 6.1.5 and 6.2.2).
+
+_420_SUB_IMAGE = replace(_SUB_IMAGE, sampling="YCbCr-4:2:0", width=1920, height=1080)
+
+
+def _420_annex(division: str, height: int = 1080) -> str:
+    return (
+        _ANNEX_B.replace("sampling=YCbCr-4:2:2", "sampling=YCbCr-4:2:0")
+        .replace("height=1080", f"height={height}")
+        .replace("MULTI-2SI", division)
+    )
+
+
+def test_a_2si_group_of_420_constituents_is_refused_by_name():
+    with pytest.raises(ValueError, match=r"MULTI-2SI.*4:2:0.*ST 425-5"):
+        parse_group_sdp(_420_annex(MULTI_2SI))
+
+
+def test_a_2si_group_of_420_constituents_is_not_written():
+    with pytest.raises(ValueError, match=r"MULTI-2SI.*4:2:0.*ST 425-5"):
+        format_group_sdp(_FLOWS, _420_SUB_IMAGE, division=MULTI_2SI)
+
+
+def test_a_square_division_of_420_constituents_reads_as_whole_row_pairs():
+    group = parse_group_sdp(_420_annex(MULTI_SD))
+    assert group.video.sampling == "YCbCr-4:2:0"
+    assert (group.essence_width, group.essence_height) == (3840, 2160)
+
+
+def test_a_square_division_of_420_into_odd_height_sub_images_is_refused():
+    """A 1920x2162 essence quartered gives 1081-row sub-images, each ending
+    in half a row pair."""
+    with pytest.raises(ValueError, match="1081"):
+        parse_group_sdp(_420_annex(MULTI_SD, height=1081))
+    with pytest.raises(ValueError, match="1081"):
+        format_group_sdp(
+            _FLOWS, replace(_420_SUB_IMAGE, height=1081), division=MULTI_SD
+        )
+
+
+def test_an_interlaced_420_constituent_is_refused_citing_the_sampling():
+    text = _420_annex(MULTI_SD).replace(
+        "SSN=ST2110-20:2017", "SSN=ST2110-20:2017; interlace"
+    )
+    with pytest.raises(ValueError, match=r"6\.2\.5"):
+        parse_group_sdp(text)

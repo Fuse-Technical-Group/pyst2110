@@ -451,7 +451,9 @@ that:
   forbids fragmenting a pgroup, and section 6.2.1's zero fill covers only
   the end of a row.
 - Interlaced 4:2:0 is refused, section 6.2.5 applying the sampling "only
-  to progressive scan images transmitted in a progressive manner".
+  to progressive scan images transmitted in a progressive manner". The
+  geometry refuses it, and so does the offer in both directions
+  (§spec:sdp), so an interlaced 4:2:0 offer is not read as a format.
 
 *Why columns rather than Table 3's coverage*: every formula above scales a
 sample position by pixels per pgroup, and the position is a column. With
@@ -615,7 +617,9 @@ Both are read as absent-means-default and written only when set, like
 values use, and is carried through uninterpreted as colorimetry is. An
 absent `RANGE` is `NARROW`, so the format reads `NARROW` from an offer that
 omits it and writes the parameter only for `FULLPROTECT` or `FULL`, after
-`interlace` and before `MAXUDP` in the order section 7.3 lists them. The
+`interlace` and before `MAXUDP` in the order section 7.3 lists them.
+An offer pairing `interlace` with a 4:2:0 sampling is refused on both
+paths, ST 2110-20 section 6.2.5 defining 4:2:0 for progressive video only. The
 allowed set depends on the colorimetry: beside `BT2100` section 7.3 allows
 `NARROW` and `FULL`, the two ranges of ITU-R BT.2100 Table 9, and elsewhere
 it adds `FULLPROTECT`, the permitted range of SMPTE RP 2077. A value outside
@@ -1003,6 +1007,27 @@ format carries, and in TCS, which it does not: the division assumes equal
 sub-images, and an essence assembled from unequal ones has no defined
 raster. Interlaced constituents are refused, the RP defining no field
 structure under division.
+
+**A 4:2:0 essence divides by square division only.** RP 2110-23 section
+5.2.3 performs two-sample interleave "as per SMPTE ST 425-5", and at 4320
+lines "as described in SMPTE ST 2082-12". ST 425-5:2019 section 5.2.1 deals
+the essence's even lines to sub-images 1 and 2 and its odd lines to 3 and 4,
+and makes every sub-image of a 4:2:0 source 4:2:2, with the colour
+difference samples sub-images 3 and 4 have no source for set to 200h at 10
+bits and 800h at 12. ST 2082-12:2019 section 4.1 does the same for the
+4320-line intermediate sub-images. No 2SI constituent therefore holds the
+row pairs a 4:2:0 pgroup spans, and a `MULTI-2SI` group declaring 4:2:0
+constituents describes no division. The group parse and writer refuse one
+by name and point at 4:2:2. Square division keeps rows contiguous, so each
+quadrant of a 4:2:0 essence is a 4:2:0 raster, and its sub-image shall be
+whole row pairs: a `MULTI-SD` group of 4:2:0 constituents of odd height is
+refused.
+
+*Why refuse 2SI over 4:2:0 rather than read it as 4:2:2*: the constituents
+of a 2SI-divided 4:2:0 essence are declared 4:2:2, and the group parse
+reads that offer as it reads any 4:2:2 group. An offer declaring 4:2:0
+constituents names a sub-image structure the division cannot produce, so
+no reading of it is the sender's.
 
 **Constituent order is group order.** The RP numbers the constituents 1 to
 N and writes those numbers as the tags, so position in the `a=group:` line
