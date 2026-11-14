@@ -15,7 +15,12 @@ from typing import Any
 
 import pytest
 
+import pyst2110
 from pyst2110.sdp import (
+    RANGE_FULL,
+    RANGE_FULLPROTECT,
+    RANGE_NARROW,
+    RANGES,
     SdpConformanceWarning,
     SdpFlow,
     SdpVideo,
@@ -779,6 +784,8 @@ def test_an_emitted_offer_parses_back_to_the_flow_it_described(
         {"max_udp": 8960},
         {"depth": 12, "sampling": "RGB", "colorimetry": "BT2020"},
         {"width": 3840, "height": 2160, "frame_rate": Fraction(24)},
+        {"range": "FULL"},
+        {"range": "FULLPROTECT", "sampling": "RGB", "depth": 12},
     ],
 )
 def test_an_emitted_offer_parses_back_to_the_format_it_described(overrides: dict):
@@ -876,6 +883,87 @@ def test_troff_and_cmax_are_written_only_when_set():
     assert fmtp["TROFF"] == "640"
     assert fmtp["CMAX"] == "5"
     assert list(fmtp).index("TP") < list(fmtp).index("TROFF") < list(fmtp).index("CMAX")
+
+
+# --- ST 2110-20 section 7.3 RANGE ------------------------------------------
+#
+# "In the absence of this parameter, NARROW shall be the assumed value", and
+# the three allowed values are NARROW, FULLPROTECT and FULL — except that
+# "when paired with Recommendation ITU-R BT.2100 colorimetry, this parameter
+# has two allowed values NARROW and FULL".
+
+
+def test_the_range_constants_are_the_tokens_section_7_3_prints():
+    assert (RANGE_NARROW, RANGE_FULLPROTECT, RANGE_FULL) == (
+        "NARROW",
+        "FULLPROTECT",
+        "FULL",
+    )
+    assert RANGES == ("NARROW", "FULLPROTECT", "FULL")
+    assert pyst2110.RANGES is RANGES
+    assert (pyst2110.RANGE_NARROW, pyst2110.RANGE_FULLPROTECT) == (
+        RANGE_NARROW,
+        RANGE_FULLPROTECT,
+    )
+    assert pyst2110.RANGE_FULL == RANGE_FULL
+
+
+def test_an_offer_without_range_reads_as_narrow():
+    assert parse_video_format(_ST2110_20).range == "NARROW"
+    assert video().range == "NARROW"
+
+
+@pytest.mark.parametrize("value", ["NARROW", "FULLPROTECT", "FULL"])
+def test_every_range_the_standard_defines_is_read_off_range(value: str):
+    text = _ST2110_20.rstrip() + f"; RANGE={value}\n"
+    assert parse_video_format(text).range == value
+
+
+@pytest.mark.parametrize("value", ["LIMITED", "narrow", "Full", ""])
+def test_a_range_the_standard_does_not_define_is_refused_on_the_way_in(value: str):
+    with pytest.raises(ValueError, match="RANGE"):
+        parse_video_format(_ST2110_20.rstrip() + f"; RANGE={value}\n")
+
+
+@pytest.mark.parametrize(
+    "value", ["LIMITED", "narrow", "", "FULL; PM=2110BPM", "FULL\r\nc=IN IP4 6.6.6.6"]
+)
+def test_a_range_the_standard_does_not_define_is_not_written(value: str):
+    with pytest.raises(ValueError, match="RANGE"):
+        format_sdp(_FLOW, video(range=value))
+
+
+def test_fullprotect_is_refused_beside_bt2100_colorimetry_both_ways():
+    """BT.2100 pairs RANGE with its own Table 9, which has no permitted-range
+    value, so FULLPROTECT there names a range the colorimetry does not have."""
+    with pytest.raises(ValueError, match="RANGE"):
+        format_sdp(_FLOW, video(colorimetry="BT2100", range="FULLPROTECT"))
+    text = _ST2110_20.rstrip() + "; colorimetry=BT2100; RANGE=FULLPROTECT\n"
+    with pytest.raises(ValueError, match="RANGE"):
+        parse_video_format(text)
+
+
+@pytest.mark.parametrize("value", ["NARROW", "FULL"])
+def test_bt2100_colorimetry_carries_its_two_ranges(value: str):
+    described = video(colorimetry="BT2100", range=value)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described
+
+
+def test_range_is_written_only_when_it_is_not_narrow():
+    """Section 7.3: a sender includes a defaulted parameter only "where the
+    default values are not correct for the contents of the stream"."""
+    assert "RANGE" not in _fmtp(format_sdp(_FLOW, _VIDEO))
+    assert _fmtp(format_sdp(_FLOW, video(range="FULL")))["RANGE"] == "FULL"
+    fmtp = _fmtp(format_sdp(_FLOW, video(range="FULLPROTECT")))
+    assert fmtp["RANGE"] == "FULLPROTECT"
+
+
+def test_range_is_written_in_section_7_3_order():
+    """Section 7.3 lists interlace, segmented, TCS, RANGE, then MAXUDP."""
+    fmtp = list(
+        _fmtp(format_sdp(_FLOW, video(interlaced=True, range="FULL", max_udp=8960)))
+    )
+    assert fmtp.index("interlace") < fmtp.index("RANGE") < fmtp.index("MAXUDP")
 
 
 @pytest.mark.parametrize(
@@ -1180,3 +1268,31 @@ def test_an_emitted_dup_offer_parses_back_to_the_two_legs_it_described(
     """The additional property, not the evidence: reader and writer agree."""
     text = format_dup_sdp(first, second, _VIDEO, any_source=any_source)
     assert parse_dup_sdp(text) == (first, second)
+
+
+# --- ST 2110-20 section 6.2.5: 4:2:0 is progressive only -------------------
+#
+# "The 4:2:0 sampling system shall only be applied to progressive scan images
+# transmitted in a progressive manner. This sampling system does not apply to
+# PsF or interlaced video essence."
+
+
+@pytest.mark.parametrize("sampling", ["YCbCr-4:2:0", "CLYCbCr-4:2:0", "ICtCp-4:2:0"])
+def test_an_interlaced_420_offer_is_refused_on_the_way_in(sampling: str):
+    text = _ST2110_20.replace("sampling=YCbCr-4:2:2", f"sampling={sampling}")
+    assert parse_video_format(text).sampling == sampling
+    with pytest.raises(ValueError, match=r"6\.2\.5"):
+        parse_video_format(text.rstrip() + "; interlace\n")
+
+
+@pytest.mark.parametrize("sampling", ["YCbCr-4:2:0", "CLYCbCr-4:2:0", "ICtCp-4:2:0"])
+def test_an_interlaced_420_offer_is_not_written(sampling: str):
+    with pytest.raises(ValueError, match=r"6\.2\.5"):
+        format_sdp(_FLOW, video(sampling=sampling, interlaced=True))
+    described = video(sampling=sampling)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described
+
+
+def test_interlace_beside_any_other_sampling_is_still_carried():
+    described = video(sampling="YCbCr-4:2:2", interlaced=True)
+    assert parse_video_format(format_sdp(_FLOW, described)) == described
