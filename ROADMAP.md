@@ -214,5 +214,11 @@ suite's error filter, given what it lacked.
 - **redundant-groups**: RP 2110-23 section 5.4's ST 2022-7 over a group,
   `P` and `S` group lines with an `a=group:DUP` per constituent. It joins
   §spec:redundancy's pair parse to §spec:multi-stream's group parse.
+- **partial-pgroup-widths**: ST 2110-20 section 6.2.1 permits a row whose
+  width is not a whole number of pgroups, the sender filling the final
+  pgroup's spare positions with zero and the SRD Length counting the fill.
+  `src/pyst2110/geometry.py` refuses such a width for every sampling,
+  because the line length every formula shares would round up rather than
+  divide (§spec:geometry).
 - **compressed-2110-22**: JPEG XS carries its own payload header
   (RFC 9134) and no raster geometry, so it shares only the RTP parse.

@@ -13,3 +13,6 @@ dist/
 
 # Agent worktrees
 .claude/worktrees/
+
+# Local copies of the standards (pub.smpte.org/doc/); not redistributed
+vendor/

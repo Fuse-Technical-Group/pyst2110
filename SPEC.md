@@ -42,6 +42,9 @@ write it again.
 ### Prior art §spec:prior-art
 
 The reference implementations are the SMPTE and IETF documents themselves.
+SMPTE publishes its standards free at `https://pub.smpte.org/doc/`, one
+page a document (`https://pub.smpte.org/doc/st2110-20/`) listing each
+published version. Local copies live in `vendor/`, which git ignores.
 GStreamer's `rtpvrawdepay`/`rtpvrawpay` and FFmpeg's `rtpdec_rfc4175` are
 the closest working code; both are per-packet C inside a media framework
 rather than a vectorized library, and neither is importable from Python.
@@ -426,9 +429,55 @@ more than half, section 6.1.5 giving the temporally first field the extra
 line. One function computes it, and the receive bound and the transmit
 split both call it rather than each halving for themselves.
 
-4:2:0 sampling is refused rather than approximated. Its pgroups span two
-sample rows, so a line is not a whole number of them and none of the
-arithmetic above holds.
+**A 4:2:0 pgroup spans two sample rows, and a line is the pair.**
+ST 2110-20 section 6.2.5 builds each 4:2:0 pgroup from two consecutive
+luminance rows, and section 6.1.5 sets the SRD Row Number to the first row
+of the pair, signalling "only every other Sample Row". So a 4:2:0 line of
+pgroups carries two sample rows, and every other quantity follows from
+that:
+
+- The pgroup is Table 3's: 6 octets at 8 bits, 15 at 10 and 9 at 12, for
+  YCbCr, CLYCbCr and ICtCp alike. Table 3 lists no 16-bit entry, so none
+  is carried.
+- The pixels a pgroup covers along a row are half Table 3's coverage of 4,
+  8 and 4, which counts the pixels of both rows: Figure 5's 10-bit pgroup
+  holds Y'00 to Y'03 and Y'10 to Y'13, four columns of two rows. The SRD
+  Offset is a column of the full-bandwidth pixel matrix (section 6.1.4),
+  so it advances by the columns, and the pgroup is reported as octets and
+  columns, with the row count beside it.
+- SRD Row Numbers are 0, 2, 4 and so on. A descriptor naming an odd row
+  names no pair, and the raster mask refuses it.
+- A frame is half the height in lines, so packets per frame and the frame
+  buffer size halve with it, and placement scales a row number by half the
+  line length.
+- A height that is not a whole number of pairs is refused. Section 6.2.2
+  forbids fragmenting a pgroup, and section 6.2.1's zero fill covers only
+  the end of a row.
+- Interlaced 4:2:0 is refused, section 6.2.5 applying the sampling "only
+  to progressive scan images transmitted in a progressive manner". The
+  geometry refuses it, and so does the offer in both directions
+  (§spec:sdp), so an interlaced 4:2:0 offer is not read as a format.
+
+*Why columns rather than Table 3's coverage*: every formula above scales a
+sample position by pixels per pgroup, and the position is a column. With
+columns the receive placement, the transmit offsets and the payload search
+are the arithmetic the one-row samplings use, with the line read as a row
+pair. Coverage would make the same formulas twice too wide for 4:2:0 alone.
+
+**Where the documents leave room, the reading is stated.** Table 3 does not
+say that its coverage counts two rows; Figures 4 and 5 show it, and RFC 4175
+section 4.3 calls the 8-bit pgroup "a group of four pixels arranged in a 2x2
+matrix". RFC 4175 gives the 10-bit 4:2:0 pgroup 15 octets for four pixels,
+which holds only half the samples 15 octets carry, and lists a 16-bit
+pgroup; ST 2110-20 Table 3 gives 15 octets for eight pixels and no 16-bit
+entry, and ST 2110-20 is what this library follows. Neither document
+defines a 4:2:0 raster of odd height.
+
+A width that is not a whole number of pgroups is refused for every sampling,
+although section 6.2.1 permits one: the sender fills the final pgroup's
+spare positions with zero and the receiver ignores them. Carrying it
+changes the line length every formula above shares, and nothing has asked
+for it (§road:future).
 
 Single-component key signals read their pgroups from a table of their own
 and are otherwise this section's arithmetic unchanged (§spec:key-signals).
@@ -491,8 +540,8 @@ sampling, and interprets none (§req:constraints).
 
 Enough of RFC 4566 and ST 2110-20's `a=fmtp:` to name a flow — connection
 address, media port, source filter — and its video format: width, height,
-frame rate, sampling, depth, colorimetry, interlace, and the sender's
-maximum UDP size.
+frame rate, sampling, depth, colorimetry, sample range, interlace, and
+the sender's maximum UDP size.
 
 A sender's required parameters are not one document's. ST 2110-20 section
 7.2 requires eight; ST 2110-21 section 8.1 adds `TP` for every video RTP
@@ -566,6 +615,26 @@ in whole microseconds, bounded inside one frame period as section 6.2
 defines TR_OFFSET, and `CMAX` as the sender's claim about its own peak.
 Both are read as absent-means-default and written only when set, like
 `MAXUDP` above; §spec:timing is what consumes them.
+
+`RANGE`, ST 2110-20 section 7.3, says which encoding range the sample
+values use, and is carried through uninterpreted as colorimetry is. An
+absent `RANGE` is `NARROW`, so the format reads `NARROW` from an offer that
+omits it and writes the parameter only for `FULLPROTECT` or `FULL`, after
+`interlace` and before `MAXUDP` in the order section 7.3 lists them.
+An offer pairing `interlace` with a 4:2:0 sampling is refused on both
+paths, ST 2110-20 section 6.2.5 defining 4:2:0 for progressive video only. The
+allowed set depends on the colorimetry: beside `BT2100` section 7.3 allows
+`NARROW` and `FULL`, the two ranges of ITU-R BT.2100 Table 9, and elsewhere
+it adds `FULLPROTECT`, the permitted range of SMPTE RP 2077. A value outside
+the set its colorimetry allows is refused on both paths, naming the
+parameter. An RP 2110-23 group carries one range, because the shared format
+carries it (§spec:multi-stream).
+
+*Why refuse an unknown range rather than carry it*: a consumer converting
+samples to light reads the range to place black and white, so a token it
+cannot recognise changes every pixel it produces. Refusing it at the parse
+names the offer, where carrying it hands the consumer a value no branch of
+its conversion expects.
 
 A multicast offer says who may send, and says so deliberately.
 ST 2110-10 section 8.4 asks a sender to signal `a=source-filter`, and
@@ -902,7 +971,7 @@ constituent streams, each a valid ST 2110-20 and ST 2110-21 stream on its
 own (section 5.1), and groups them in one SDP document (section 5.3).
 Vendors and router documentation often call it ST 2110-23; it is published
 as a recommended practice, and its text is public on SMPTE's document
-library.
+library (`https://pub.smpte.org/doc/rp2110-23/`).
 
 The single-flow parse used to read a quarter of that document. `parse_sdp`
 took the first `m=video` block and `parse_video_format` the first fmtp
@@ -941,6 +1010,27 @@ format carries, and in TCS, which it does not: the division assumes equal
 sub-images, and an essence assembled from unequal ones has no defined
 raster. Interlaced constituents are refused, the RP defining no field
 structure under division.
+
+**A 4:2:0 essence divides by square division only.** RP 2110-23 section
+5.2.3 performs two-sample interleave "as per SMPTE ST 425-5", and at 4320
+lines "as described in SMPTE ST 2082-12". ST 425-5:2019 section 5.2.1 deals
+the essence's even lines to sub-images 1 and 2 and its odd lines to 3 and 4,
+and makes every sub-image of a 4:2:0 source 4:2:2, with the colour
+difference samples sub-images 3 and 4 have no source for set to 200h at 10
+bits and 800h at 12. ST 2082-12:2019 section 4.1 does the same for the
+4320-line intermediate sub-images. No 2SI constituent therefore holds the
+row pairs a 4:2:0 pgroup spans, and a `MULTI-2SI` group declaring 4:2:0
+constituents describes no division. The group parse and writer refuse one
+by name and point at 4:2:2. Square division keeps rows contiguous, so each
+quadrant of a 4:2:0 essence is a 4:2:0 raster, and its sub-image shall be
+whole row pairs: a `MULTI-SD` group of 4:2:0 constituents of odd height is
+refused.
+
+*Why refuse 2SI over 4:2:0 rather than read it as 4:2:2*: the constituents
+of a 2SI-divided 4:2:0 essence are declared 4:2:2, and the group parse
+reads that offer as it reads any 4:2:2 group. An offer declaring 4:2:0
+constituents names a sub-image structure the division cannot produce, so
+no reading of it is the sender's.
 
 **Constituent order is group order.** The RP numbers the constituents 1 to
 N and writes those numbers as the tags, so position in the `a=group:` line
@@ -1022,6 +1112,14 @@ the round trip is a format neither side is tied to the documents for. So a
 raster small enough to work out on paper, the interlaced layout, and the
 target format each have one, the last as named packets of a frame too large
 to write out whole.
+
+Every sampling and depth the pgroup tables list also runs at rasters no
+broadcast standard names: cinema, tiled, portrait, odd-height, one pgroup
+wide, and a line no packet near the UDP limit divides. Each case derives
+the frame's size from the samples a pixel carries rather than from the
+tables, then builds the frame's headers, parses them back and places
+them, and round-trips the offer. A slip in a table, or a geometry that
+holds only at broadcast rasters, fails there.
 
 Captures from real senders are the strongest evidence available without a
 NIC. Where a fixture is taken off the wire its provenance is recorded

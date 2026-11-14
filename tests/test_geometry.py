@@ -1,8 +1,8 @@
 """Pgroup and packet arithmetic for a video format (SPEC §spec:geometry).
 
-The pgroup sizes are read off SMPTE ST 2110-20 Table 1 (4:4:4) and Table 2
-(4:2:2), and the packet counts are checked against formats whose answers can
-be worked out by hand.
+The pgroup sizes are read off SMPTE ST 2110-20 Table 1 (4:4:4), Table 2
+(4:2:2) and Table 3 (4:2:0), and the packet counts are checked against
+formats whose answers can be worked out by hand.
 """
 
 from __future__ import annotations
@@ -13,14 +13,17 @@ from typing import Any
 import numpy as np
 import pytest
 
+import pyst2110
 from pyst2110.geometry import (
     byte_offset,
     choose_payload_size,
     fits_raster,
+    frame_bytes,
     line_bytes,
     packets_per_frame,
     packets_per_line,
     pgroup,
+    pgroup_rows,
     raster_offset,
     rows_per_field,
     sample_offset,
@@ -83,8 +86,127 @@ def test_a_pgroup_holds_a_whole_number_of_octets_and_pixels(sampling: str, depth
 
 
 def test_an_unsupported_format_names_what_is_supported():
-    with pytest.raises(ValueError, match="no pgroup"):
-        pgroup(video(sampling="YCbCr-4:2:0", depth=10))
+    with pytest.raises(ValueError, match="no pgroup") as raised:
+        pgroup(video(sampling="YCbCr-4:1:1", depth=10))
+    assert "YCbCr-4:2:0" in str(raised.value)
+
+
+# --- 4:2:0 ------------------------------------------------------------------
+#
+# ST 2110-20 section 6.2.5 and Table 3. A 4:2:0 pgroup holds samples from two
+# consecutive luminance rows (Figure 5: Y'00-Y'01-Y'10-Y'11-CB'00-CR'00), so
+# Table 3's "pgroup coverage (pixels)" counts both rows: 4, 8 and 4 pixels
+# are 2, 4 and 2 columns of two rows. The SRD Offset is a column of the
+# full-bandwidth pixel matrix (section 6.1.4), so it advances by the columns.
+
+
+@pytest.mark.parametrize("sampling", ["YCbCr-4:2:0", "CLYCbCr-4:2:0", "ICtCp-4:2:0"])
+@pytest.mark.parametrize(
+    ("depth", "octets", "coverage"),
+    [(8, 6, 4), (10, 15, 8), (12, 9, 4)],
+)
+def test_a_420_pgroup_is_table_3s_coverage_over_two_rows(
+    sampling: str, depth: int, octets: int, coverage: int
+):
+    current = video(sampling=sampling, depth=depth)
+    group_bytes, group_pixels = pgroup(current)
+    assert pgroup_rows(current) == 2
+    assert group_bytes == octets
+    assert group_pixels * pgroup_rows(current) == coverage
+    # Four luminance samples and two colour difference samples for every two
+    # columns of two rows: three samples a column, at the stated depth.
+    assert group_pixels * 3 * depth == group_bytes * 8
+
+
+@pytest.mark.parametrize(
+    "sampling", ["YCbCr-4:4:4", "RGB", "XYZ", "YCbCr-4:2:2", "ICtCp-4:2:2"]
+)
+def test_every_other_pgroup_spans_one_row(sampling: str):
+    assert pgroup_rows(video(sampling=sampling, depth=12)) == 1
+
+
+def test_a_420_depth_table_3_does_not_list_is_refused():
+    """Table 3 stops at 12 bits; RFC 4175's 16-bit 4:2:0 pgroup is not one
+    ST 2110-20 carries."""
+    with pytest.raises(ValueError, match=r"\[8, 10, 12\]"):
+        pgroup(video(sampling="YCbCr-4:2:0", depth=16))
+
+
+def test_interlaced_420_is_refused():
+    """Section 6.2.5: "This sampling system does not apply to PsF or
+    interlaced video essence"."""
+    with pytest.raises(ValueError, match=r"6\.2\.5"):
+        pgroup(video(sampling="YCbCr-4:2:0", interlaced=True))
+
+
+def test_the_row_pair_geometry_is_exported_from_the_package():
+    assert pyst2110.pgroup_rows is pgroup_rows
+    assert pyst2110.frame_bytes is frame_bytes
+    assert {"pgroup_rows", "frame_bytes"} <= set(pyst2110.__all__)
+
+
+def test_a_420_line_is_the_row_pair_one_srd_row_number_names():
+    """1920 columns at four a 15-octet pgroup: 480 pgroups, 7200 octets, and
+    two luminance rows of samples in them."""
+    current = video(sampling="YCbCr-4:2:0")
+    assert line_bytes(current) == 7200
+    payload = choose_payload_size(current, 1400)
+    # 93 pgroups fit 1400 octets; 80 is the largest count dividing 480.
+    assert payload == 1200
+    assert packets_per_line(current, payload) == 6
+    assert packets_per_frame(current, payload) == 6 * 540
+
+
+def test_a_frame_is_its_row_pairs_for_420_and_its_rows_otherwise():
+    """Ten bits of 1.5 samples a pixel over 1920x1080 is 3,888,000 octets."""
+    assert frame_bytes(video(sampling="YCbCr-4:2:0")) == 3_888_000
+    assert frame_bytes(video()) == 1080 * 4800
+    assert frame_bytes(video(interlaced=True)) == 1080 * 4800
+
+
+def test_a_420_height_of_an_odd_row_count_is_refused():
+    """A pgroup holds two rows and is never fragmented (section 6.2.2), so a
+    raster ending in half a pair has a row no pgroup can carry."""
+    odd = video(sampling="YCbCr-4:2:0", height=1081)
+    with pytest.raises(ValueError, match="1081"):
+        packets_per_frame(odd, 1200)
+    with pytest.raises(ValueError, match="1081"):
+        frame_bytes(odd)
+
+
+def test_a_420_row_number_is_the_first_row_of_its_pair():
+    """Section 6.1.5: "Only every other Sample Row shall be signaled", so an
+    odd row names no pair and does not fit, however small."""
+    current = video(sampling="YCbCr-4:2:0")
+    lines = np.array([0, 1, 2, 1078, 1079, 1080], dtype=np.int64)
+    offsets = np.zeros(6, dtype=np.int64)
+    assert fits_raster(current, lines, offsets).tolist() == [
+        True,
+        False,
+        True,
+        True,
+        False,
+        False,
+    ]
+
+
+def test_a_420_raster_offset_counts_row_pairs():
+    """Row 2 is the second pair, one 7200-octet line in; column 4 is one
+    15-octet pgroup along it."""
+    current = video(sampling="YCbCr-4:2:0")
+    lines = np.array([0, 0, 2, 2, 1078], dtype=np.int64)
+    offsets = np.array([0, 4, 0, 4, 1916], dtype=np.int64)
+    assert raster_offset(current, lines, offsets).tolist() == [
+        0,
+        15,
+        7200,
+        7215,
+        539 * 7200 + 479 * 15,
+    ]
+    assert byte_offset(current, offsets).tolist() == [0, 15, 0, 15, 479 * 15]
+    assert sample_offset(current, byte_offset(current, offsets)).tolist() == (
+        offsets.tolist()
+    )
 
 
 def test_a_line_is_a_whole_number_of_pgroups():

@@ -429,3 +429,36 @@ def test_a_sampling_this_library_refuses_is_refused_here_too():
     """4:2:0 pgroups span two rows, so none of the arithmetic holds."""
     with pytest.raises(ValueError, match="pgroup"):
         FrameHeaders(video(sampling="YCbCr-4:2:0"), payload_size=5, ssrc=_SSRC)
+
+
+def test_a_420_frame_numbers_every_other_row_and_counts_columns():
+    """Four columns by four rows of YCbCr-4:2:0 8-bit, one 6-octet pgroup a
+    packet: two pgroups a row pair, two pairs, four packets. ST 2110-20
+    section 6.1.5 puts the first row of the pair in the SRD Row Number, so
+    the rows read 0, 0, 2, 2; the SRD Offset is the column, 0 and 2."""
+    built = FrameHeaders(
+        video(sampling="YCbCr-4:2:0", depth=8, height=4),
+        payload_size=6,
+        ssrc=_SSRC,
+    )
+    block = built.stamp(0)
+    assert built.packet_count == 4
+    # SRD header at octet 14: Length, then F|Row Number, then C|Offset.
+    assert u16(block, 14).tolist() == [6, 6, 6, 6]
+    assert u16(block, 16).tolist() == [0, 0, 2, 2]
+    assert u16(block, 18).tolist() == [0, 2, 0, 2]
+    assert built.frame_offset_octets.tolist() == [0, 6, 12, 18]
+    # The marker ends the frame and nothing else (section 6.1.2).
+    assert (block[:, 1] >> 7).tolist() == [0, 0, 0, 1]
+
+
+def test_a_420_frame_of_an_odd_height_is_refused():
+    with pytest.raises(ValueError, match="height of 3"):
+        FrameHeaders(video(sampling="YCbCr-4:2:0", depth=8, height=3), 6)
+
+
+def test_an_interlaced_420_frame_is_refused():
+    with pytest.raises(ValueError, match="interlace"):
+        FrameHeaders(
+            video(sampling="YCbCr-4:2:0", depth=8, height=4, interlaced=True), 6
+        )

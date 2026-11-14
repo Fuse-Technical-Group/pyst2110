@@ -3,7 +3,10 @@
 The fixed vectors are read off SMPTE RP 2110-23:2019 by hand: Figure 1's
 coloured grid for four-way two-sample interleave, Figure 2's numbered source
 grid for sixteen-way, Figure 3's quadrant boundaries for four-way square
-division and Figure 5's numbering for sixteen-way. None is computed from the
+division and Figure 5's numbering for sixteen-way. The four-way divisions
+are checked again against SMPTE ST 435-1:2012, the SDI standard the RP takes
+them from: Table 5's sample and line relation for two-sample interleave and
+Figure 5's quadrants for square division. None is computed from the
 implementation's own formulas. The properties — every essence pixel lands in
 exactly one constituent pixel, and reassembly undoes the split — run over
 every pixel of rasters small enough to enumerate (§spec:testing).
@@ -362,3 +365,50 @@ def test_reassembly_refuses_a_count_the_rp_does_not_define():
 def test_split_refuses_an_essence_with_no_raster_axes():
     with pytest.raises(ValueError, match="rows and columns"):
         split(np.zeros(8), division=MULTI_2SI, count=4)
+
+
+# --- SMPTE ST 435-1:2012 ------------------------------------------------------
+
+
+@pytest.mark.parametrize("width", [3840, 4096])
+def test_four_way_interleave_follows_st_435_1_table_5(width):
+    """Table 5: sub-image 1 carries samples 4M and 4M+1 of line 2N, 2 carries
+    4M+2 and 4M+3 of line 2N, 3 and 4 the same of line 2N+1, each at
+    samples 2M and 2M+1 of active line N. Checked for every M and N."""
+    m = np.arange(width // 4)[None, :, None]
+    n = np.arange(1080)[:, None, None]
+    pair = np.arange(2)[None, None, :]
+    for constituent, (column, row) in enumerate(
+        [(0, 0), (2, 0), (0, 1), (2, 1)], start=1
+    ):
+        number, x, y = to_constituent(
+            4 * m + column + pair,
+            2 * n + row,
+            width=width,
+            height=2160,
+            division=MULTI_2SI,
+            count=4,
+        )
+        assert (number == constituent).all()
+        np.testing.assert_array_equal(x, np.broadcast_to(2 * m + pair, x.shape))
+        np.testing.assert_array_equal(y, np.broadcast_to(n, y.shape))
+
+
+@pytest.mark.parametrize("width", [3840, 4096])
+@pytest.mark.parametrize(
+    ("corner", "constituent"),
+    [((0, 0), 1), ((1, 0), 2), ((0, 1), 3), ((1, 1), 4)],
+)
+def test_four_way_square_division_follows_st_435_1_figure_5(width, corner, constituent):
+    """Figure 5: samples 0 to W/2-1 and lines 0 to 1079 go to sub-image 1,
+    the right half of those lines to 2, lines 1080 to 2159 to 3 and 4."""
+    half = width // 2
+    left, top = corner[0] * half, corner[1] * 1080
+    xs = np.array([left, left + half - 1, left, left + half - 1])
+    ys = np.array([top, top, top + 1079, top + 1079])
+    number, x, y = to_constituent(
+        xs, ys, width=width, height=2160, division=MULTI_SD, count=4
+    )
+    assert (number == constituent).all()
+    assert x.tolist() == [0, half - 1, 0, half - 1]
+    assert y.tolist() == [0, 0, 1079, 1079]

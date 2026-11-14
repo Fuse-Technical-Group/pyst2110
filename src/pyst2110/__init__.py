@@ -24,10 +24,12 @@ from pyst2110.framing import frame_starts as frame_starts
 from pyst2110.geometry import byte_offset as byte_offset
 from pyst2110.geometry import choose_payload_size as choose_payload_size
 from pyst2110.geometry import fits_raster as fits_raster
+from pyst2110.geometry import frame_bytes as frame_bytes
 from pyst2110.geometry import line_bytes as line_bytes
 from pyst2110.geometry import packets_per_frame as packets_per_frame
 from pyst2110.geometry import packets_per_line as packets_per_line
 from pyst2110.geometry import pgroup as pgroup
+from pyst2110.geometry import pgroup_rows as pgroup_rows
 from pyst2110.geometry import raster_offset as raster_offset
 from pyst2110.geometry import rows_per_field as rows_per_field
 from pyst2110.geometry import sample_offset as sample_offset
@@ -38,6 +40,10 @@ from pyst2110.redundancy import reconstruct as reconstruct
 from pyst2110.rtp import FIXED_HEADER_SIZE as FIXED_HEADER_SIZE
 from pyst2110.rtp import RtpHeaders as RtpHeaders
 from pyst2110.rtp import parse_rtp as parse_rtp
+from pyst2110.sdp import RANGE_FULL as RANGE_FULL
+from pyst2110.sdp import RANGE_FULLPROTECT as RANGE_FULLPROTECT
+from pyst2110.sdp import RANGE_NARROW as RANGE_NARROW
+from pyst2110.sdp import RANGES as RANGES
 from pyst2110.sdp import RTP_CLOCK_RATE as RTP_CLOCK_RATE
 from pyst2110.sdp import SENDER_TYPE_NARROW as SENDER_TYPE_NARROW
 from pyst2110.sdp import SENDER_TYPE_NARROW_LINEAR as SENDER_TYPE_NARROW_LINEAR
@@ -78,6 +84,10 @@ __all__ = [
     "MULTI_2SI",
     "MULTI_SD",
     "PACKET_HEADER_SIZE",
+    "RANGES",
+    "RANGE_FULL",
+    "RANGE_FULLPROTECT",
+    "RANGE_NARROW",
     "RTP_CLOCK_RATE",
     "SENDER_TYPES",
     "SENDER_TYPE_NARROW",
@@ -107,6 +117,7 @@ __all__ = [
     "format_group_sdp",
     "format_sdp",
     "frame_boundaries",
+    "frame_bytes",
     "frame_starts",
     "line_bytes",
     "max_payload_size",
@@ -120,6 +131,7 @@ __all__ = [
     "parse_sdp",
     "parse_video_format",
     "pgroup",
+    "pgroup_rows",
     "raster_offset",
     "read_schedule",
     "read_times",
