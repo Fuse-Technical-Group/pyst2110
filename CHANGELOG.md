@@ -1,3 +1,16 @@
+# [0.11.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.10.0...v0.11.0) (2026-11-14)
+
+
+### Bug Fixes
+
+* **sdp:** refuse 4:2:0 offers that no format or division defines ([610c771](https://github.com/Fuse-Technical-Group/pyst2110/commit/610c771717d7c2107dac3ee752ca17927cc40efb))
+
+
+### Features
+
+* **geometry:** carry 4:2:0 sampling as pgroups over a row pair ([2a2320a](https://github.com/Fuse-Technical-Group/pyst2110/commit/2a2320ae64a8a2da0c0fe76169edd1be91012ba8))
+* **sdp:** carry ST 2110-20 RANGE on the video format ([42b9633](https://github.com/Fuse-Technical-Group/pyst2110/commit/42b9633c118d26c021b8738867e50f893273d1fe))
+
 # [0.10.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.9.1...v0.10.0) (2026-11-14)
 
 
