@@ -10,6 +10,8 @@ line and ``TP`` parameter included.
 
 from __future__ import annotations
 
+import warnings
+from dataclasses import replace
 from fractions import Fraction
 
 import pytest
@@ -18,6 +20,9 @@ from pyst2110.division import MULTI_2SI, MULTI_SD
 from pyst2110.sdp import (
     SdpConformanceWarning,
     SdpFlow,
+    SdpGroup,
+    SdpVideo,
+    format_group_sdp,
     parse_dup_sdp,
     parse_group_sdp,
     parse_sdp,
@@ -245,3 +250,125 @@ def test_a_constituent_without_its_own_fmtp_line_is_named_by_its_tag():
     text = _ANNEX_B.replace(_ANNEX_FMTP + "\na=mid:3", "a=mid:3")
     with pytest.raises(ValueError, match="'3'"):
         parse_group_sdp(text)
+
+
+# The written direction. A four-way group of a 7680x4320 essence: each
+# constituent a 3840x2160 sub-image on its own multicast address from one
+# sender. The group line is session-level, so RFC 4566 section 5 puts it after
+# t= and before the first media section; RP 2110-23 section 5.3 ends each
+# constituent's block with its a=mid:, and numbers the tags 1 to N.
+_SENDER = "192.0.2.1"
+_FLOWS = tuple(SdpFlow(f"239.10.0.{n}", 20000, _SENDER) for n in range(1, 5))
+_SUB_IMAGE = SdpVideo(
+    width=3840,
+    height=2160,
+    frame_rate=Fraction(60000, 1001),
+    depth=10,
+    sampling="YCbCr-4:2:2",
+    colorimetry="BT709",
+)
+_SUB_IMAGE_FMTP = (
+    "a=fmtp:96 sampling=YCbCr-4:2:2; width=3840; height=2160; "
+    "exactframerate=60000/1001; depth=10; colorimetry=BT709; PM=2110GPM; "
+    "SSN=ST2110-20:2017; TP=2110TPN"
+)
+_GROUP_OFFER_LINES = [
+    "v=0",
+    f"o=- 0 0 IN IP4 {_SENDER}",
+    "s= ",
+    "t=0 0",
+    "a=group:MULTI-2SI 1 2 3 4",
+] + [
+    line
+    for n in range(1, 5)
+    for line in (
+        "m=video 20000 RTP/AVP 96",
+        f"c=IN IP4 239.10.0.{n}/64",
+        f"a=source-filter: incl IN IP4 239.10.0.{n} {_SENDER}",
+        "a=rtpmap:96 raw/90000",
+        _SUB_IMAGE_FMTP,
+        f"a=mid:{n}",
+    )
+]
+
+
+def test_an_emitted_group_is_the_document_rp_2110_23_describes():
+    assert format_group_sdp(_FLOWS, _SUB_IMAGE) == "".join(
+        f"{line}\r\n" for line in _GROUP_OFFER_LINES
+    )
+
+
+def test_square_division_is_written_only_when_named():
+    text = format_group_sdp(_FLOWS, _SUB_IMAGE, division=MULTI_SD)
+    assert "a=group:MULTI-SD 1 2 3 4\r\n" in text
+
+
+def test_every_constituent_carries_one_troff():
+    """RP 2110-23 section 5.5: one TRoffset for every constituent."""
+    text = format_group_sdp(_FLOWS, replace(_SUB_IMAGE, tr_offset_us=40))
+    fmtp = [line for line in text.split("\r\n") if line.startswith("a=fmtp:")]
+    assert len(fmtp) == 4
+    assert all("; TROFF=40" in line for line in fmtp)
+
+
+@pytest.mark.parametrize("division", [MULTI_2SI, MULTI_SD])
+@pytest.mark.parametrize("count", [4, 16])
+def test_an_emitted_group_parses_back_to_the_flows_format_and_division(
+    division: str, count: int
+):
+    """The additional property, not the evidence: reader and writer agree,
+    here over a 7680x4320 essence at both divisions and both counts."""
+    side = 2 if count == 4 else 4
+    flows = tuple(SdpFlow(f"239.10.0.{n}", 20000, _SENDER) for n in range(count))
+    video = replace(_SUB_IMAGE, width=7680 // side, height=4320 // side)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SdpConformanceWarning)
+        group = parse_group_sdp(format_group_sdp(flows, video, division=division))
+    assert group == SdpGroup(division, flows, video)
+    assert (group.essence_width, group.essence_height) == (7680, 4320)
+
+
+@pytest.mark.parametrize("parse", [parse_sdp, parse_video_format])
+def test_a_written_group_is_refused_by_the_single_flow_parses(parse):
+    with pytest.raises(ValueError, match="parse_group_sdp"):
+        parse(format_group_sdp(_FLOWS, _SUB_IMAGE))
+
+
+def test_a_group_of_a_count_the_rp_does_not_define_is_not_written():
+    with pytest.raises(ValueError, match="4 or 16"):
+        format_group_sdp(_FLOWS[:3], _SUB_IMAGE)
+
+
+def test_the_temporal_division_is_not_written():
+    with pytest.raises(ValueError, match="PHASED"):
+        format_group_sdp(_FLOWS, _SUB_IMAGE, division="PHASED")
+
+
+def test_an_interlaced_group_is_not_written():
+    with pytest.raises(ValueError, match="interlace"):
+        format_group_sdp(_FLOWS, replace(_SUB_IMAGE, interlaced=True))
+
+
+def test_a_sub_image_two_sample_interleave_cannot_make_is_not_written():
+    with pytest.raises(ValueError, match="divide"):
+        format_group_sdp(_FLOWS, replace(_SUB_IMAGE, width=3839))
+
+
+def test_two_constituents_on_one_multicast_address_are_not_written():
+    """RP 2110-23 section 5.6 binds the sender to a distinct multicast
+    address each, whatever the ports."""
+    flows = (*_FLOWS[:3], SdpFlow("239.10.0.1", 20002, _SENDER))
+    with pytest.raises(ValueError, match=r"5\.6"):
+        format_group_sdp(flows, _SUB_IMAGE)
+
+
+def test_one_unicast_flow_written_twice_is_not_two_constituents():
+    flows = tuple(SdpFlow(f"192.0.2.{n}", 5004) for n in (10, 11, 12, 10))
+    with pytest.raises(ValueError, match="cannot tell"):
+        format_group_sdp(flows, _SUB_IMAGE)
+
+
+def test_every_constituent_is_validated_as_a_single_flow_offer_is():
+    flows = (*_FLOWS[:3], SdpFlow("239.10.0.4", 20000))
+    with pytest.raises(ValueError, match="any_source"):
+        format_group_sdp(flows, _SUB_IMAGE)

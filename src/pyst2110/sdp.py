@@ -14,7 +14,8 @@ ST 2022-7 with a session-level ``a=group:DUP``, and :func:`parse_dup_sdp` and
 
 So is one essence divided over several flows. SMPTE RP 2110-23 groups four or
 sixteen constituent flows with ``a=group:MULTI-2SI`` or ``a=group:MULTI-SD``,
-and :func:`parse_group_sdp` reads that document whole (§spec:multi-stream).
+and :func:`parse_group_sdp` and :func:`format_group_sdp` are that document
+both ways (§spec:multi-stream).
 
 Colorimetry is carried through, not interpreted: what a consumer does with
 ``BT2020`` is its own concern, and this records which token the SDP said.
@@ -44,6 +45,7 @@ __all__ = [
     "SdpGroup",
     "SdpVideo",
     "format_dup_sdp",
+    "format_group_sdp",
     "format_sdp",
     "parse_dup_sdp",
     "parse_group_sdp",
@@ -126,11 +128,6 @@ _DUP = "DUP"
 # caps RMX_MAX_DUP_STREAMS at two. A group naming three legs describes a
 # document nothing downstream of the parse can take.
 _DUP_LEGS = 2
-
-# The identification tags a written offer gives its two blocks. RFC 5888
-# leaves the value a token of the document's own choosing, and RFC 5888's own
-# examples number them; nothing outside the document reads them.
-_DUP_TAGS = ("1", "2")
 
 # RP 2110-23 section 5.3: the three grouping semantics it defines on RFC
 # 5888's attribute, each meaning one essence divided over several flows.
@@ -986,6 +983,7 @@ def format_sdp(
     return _offer(
         (flow,),
         video,
+        semantics=None,
         payload_type=payload_type,
         sender_type=sender_type,
         any_source=any_source,
@@ -1025,9 +1023,103 @@ def format_dup_sdp(
     Legs sharing a group but not a sender are a pair — source-specific
     multicast is two paths onto one address.
     """
+    if first == second:
+        raise ValueError(
+            f"both legs name {first.destination_ip} port "
+            f"{first.destination_port} and the same sender, which is one "
+            f"leg written twice rather than the two paths ST 2022-7 protects "
+            f"with"
+        )
     return _offer(
         (first, second),
         video,
+        semantics=_DUP,
+        payload_type=payload_type,
+        sender_type=sender_type,
+        any_source=any_source,
+        session_name=session_name,
+        session_id=session_id,
+        ttl=ttl,
+    )
+
+
+def format_group_sdp(
+    flows: Sequence[SdpFlow],
+    video: SdpVideo,
+    *,
+    division: str = MULTI_2SI,
+    payload_type: int = _DEFAULT_PAYLOAD_TYPE,
+    sender_type: str | None = None,
+    any_source: bool = False,
+    session_name: str = " ",
+    session_id: int = 0,
+    ttl: int = 64,
+) -> str:
+    """Writes the one offer that describes an RP 2110-23 group.
+
+    :func:`format_sdp`'s document with RFC 5888's grouping over it: a
+    session-level ``a=group:`` naming the division and the tags 1 to N, and a
+    ``m=video`` block per constituent carrying its own ``c=`` and
+    ``a=source-filter`` and ending in its ``a=mid:``, as RP 2110-23 section
+    5.3 lays the document out. ``flows`` are the constituents in constituent
+    order, four or sixteen of them, and :func:`parse_group_sdp` reads them
+    back in that order. Every keyword means what it does for a single-flow
+    offer and applies to every constituent.
+
+    ``video`` is each constituent's format, so it describes a sub-image: a
+    four-way group of a 7680x4320 essence passes 3840x2160. Every block
+    carries it, which writes the one ``TROFF`` RP 2110-23 section 5.5
+    requires of every constituent; the equal RTP timestamps it also requires
+    follow from stamping each constituent's headers from one format and one
+    frame index. ``division`` is ``MULTI-2SI`` unless the caller names
+    ``MULTI-SD``, which the RP deprecates for new designs.
+
+    Raises ``ValueError`` for a count other than 4 or 16, for ``PHASED``, for
+    an interlaced format, for a sub-image the division cannot have cut from
+    an essence, for two constituents on one multicast address, which section
+    5.6 forbids, and for two that name one address, port and sender.
+    """
+    if division == _PHASED:
+        raise ValueError(
+            "PHASED divides an essence in time, each phase carrying its own RTP "
+            f"timestamps, and only {MULTI_2SI} and {MULTI_SD} are written here"
+        )
+    count = len(flows)
+    if count not in CONSTITUENT_COUNTS:
+        raise ValueError(
+            f"a group of {count} constituents is not one RP 2110-23 defines; "
+            f"it divides an essence into 4 or 16"
+        )
+    if video.interlaced:
+        raise ValueError(
+            "an interlaced format cannot be divided: RP 2110-23 defines no "
+            "field structure under division"
+        )
+    side = math.isqrt(count)
+    sub_image_size(
+        video.width * side, video.height * side, division=division, count=count
+    )
+    seen: set[SdpFlow] = set()
+    multicast: set[str] = set()
+    for flow in flows:
+        if flow in seen:
+            raise ValueError(
+                f"two constituents name {flow.destination_ip} port "
+                f"{flow.destination_port} and the same sender, so a receiver "
+                f"cannot tell their packets apart"
+            )
+        seen.add(flow)
+        destination = _address(flow.destination_ip, "destination")
+        if destination.is_multicast and str(destination) in multicast:
+            raise ValueError(
+                f"two constituents share the multicast address {destination}; "
+                f"RP 2110-23 section 5.6 requires a distinct one for each"
+            )
+        multicast.add(str(destination))
+    return _offer(
+        flows,
+        video,
+        semantics=division,
         payload_type=payload_type,
         sender_type=sender_type,
         any_source=any_source,
@@ -1041,6 +1133,7 @@ def _offer(
     flows: Sequence[SdpFlow],
     video: SdpVideo,
     *,
+    semantics: str | None,
     payload_type: int,
     sender_type: str | None,
     any_source: bool,
@@ -1048,11 +1141,13 @@ def _offer(
     session_id: int,
     ttl: int,
 ) -> str:
-    """The offer one or two flows share, validated before a line is written.
+    """The offer one flow, a pair or a group shares, validated before a line
+    is written.
 
-    One writer for both, because a single-leg offer and one leg of a pair are
-    the same media section under the same rules: two copies of them are two
-    chances to disagree.
+    One writer for all three, because a single-leg offer, one leg of a pair
+    and one constituent of a group are the same media section under the same
+    rules: two copies of them are two chances to disagree. ``semantics`` is
+    the ``a=group:`` grouping the flows, or ``None`` for a single flow.
     """
     destinations = [_address(flow.destination_ip, "destination") for flow in flows]
     origins = [
@@ -1085,14 +1180,6 @@ def _offer(
                 f"section 8.4 asks a sender to signal, or pass any_source=True to "
                 f"offer the group to any sender"
             )
-    if len(set(flows)) != len(flows):
-        raise ValueError(
-            f"both legs name {flows[0].destination_ip} port "
-            f"{flows[0].destination_port} and the same sender, which is one "
-            f"leg written twice rather than the two paths ST 2022-7 protects "
-            f"with"
-        )
-
     parameters = _media_type_parameters(video, sender_type)
     origin = origins[0]
     host = str(origin) if origin else _unspecified_host(destinations[0])
@@ -1103,10 +1190,15 @@ def _offer(
         f"s={session_name}",
         "t=0 0",
     ]
-    redundant = len(flows) > 1
-    tags = _DUP_TAGS if redundant else ("",)
-    if redundant:
-        lines.append(f"a=group:{_DUP} {' '.join(tags)}")
+    # RFC 5888 leaves a tag's value to the document, and RFC 7104's and
+    # RP 2110-23's examples both number them; RP 2110-23 section 5.3 makes the
+    # number the constituent's.
+    tags = tuple(str(n) for n in range(1, len(flows) + 1)) if semantics else ("",)
+    if semantics:
+        lines.append(f"a=group:{semantics} {' '.join(tags)}")
+    # RP 2110-23 section 5.3 ends each constituent's section with its a=mid:.
+    # A pair keeps the place it has always been written in.
+    mid_last = semantics in _RP_GROUPS
     for flow, destination, leg_origin, tag in zip(
         flows, destinations, origins, tags, strict=True
     ):
@@ -1123,10 +1215,12 @@ def _offer(
                 f"a=source-filter: incl IN {_addrtype(destination)} "
                 f"{destination} {leg_origin}"
             )
-        if tag:
+        if tag and not mid_last:
             lines.append(f"a=mid:{tag}")
         lines.append(f"a=rtpmap:{payload_type} raw/{RTP_CLOCK_RATE}")
         lines.append(f"a=fmtp:{payload_type} {parameters}")
+        if tag and mid_last:
+            lines.append(f"a=mid:{tag}")
     return "".join(f"{line}\r\n" for line in lines)
 
 
