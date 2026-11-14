@@ -20,6 +20,7 @@ from pyst2110.geometry import (
     packets_per_frame,
     packets_per_line,
     pgroup,
+    pgroup_rows,
     raster_offset,
     rows_per_field,
     sample_offset,
@@ -111,8 +112,8 @@ class FrameHeaders:
         the wire: a sampling with no pgroup, a payload size that is not whole
         pgroups or does not tile a line or overruns the flow's UDP limit or
         the SRD Length field, a raster with no rows or past what the row and
-        offset fields hold, or a payload type, SSRC or initial sequence number
-        outside its own field.
+        offset fields hold, a 4:2:0 raster of odd height, or a payload type,
+        SSRC or initial sequence number outside its own field.
         """
         per_line, rows = _validate(
             video, payload_size, payload_type, ssrc, initial_sequence
@@ -131,6 +132,9 @@ class FrameHeaders:
         split = rows * per_line if video.interlaced else self.packet_count
         field = (self._index >= split).astype(np.int64)
         line = np.where(field == 1, self._index - split, self._index) // per_line
+        # A 4:2:0 line of pgroups holds a pair of rows, and section 6.1.5
+        # numbers it by the first of them.
+        line *= pgroup_rows(video)
         self._field = field
 
         # Where each packet starts within its row, as the sample position the
@@ -285,8 +289,8 @@ def _validate(
         raise ValueError(f"{ssrc} is not a 32-bit SSRC")
     if not 0 <= initial_sequence < _layout.U32_MODULUS:
         raise ValueError(f"{initial_sequence} is not a 32-bit sequence number")
-    if video.height <= 0:
-        raise ValueError(f"a height of {video.height} is not an image")
+    # Refuses a height of no rows, and a 4:2:0 height of half a pair.
+    packets_per_frame(video, payload_size)
     rows = rows_per_field(video)
     if rows > _MAX_RASTER:
         raise ValueError(

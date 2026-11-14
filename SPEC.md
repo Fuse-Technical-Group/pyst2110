@@ -426,9 +426,53 @@ more than half, section 6.1.5 giving the temporally first field the extra
 line. One function computes it, and the receive bound and the transmit
 split both call it rather than each halving for themselves.
 
-4:2:0 sampling is refused rather than approximated. Its pgroups span two
-sample rows, so a line is not a whole number of them and none of the
-arithmetic above holds.
+**A 4:2:0 pgroup spans two sample rows, and a line is the pair.**
+ST 2110-20 section 6.2.5 builds each 4:2:0 pgroup from two consecutive
+luminance rows, and section 6.1.5 sets the SRD Row Number to the first row
+of the pair, signalling "only every other Sample Row". So a 4:2:0 line of
+pgroups carries two sample rows, and every other quantity follows from
+that:
+
+- The pgroup is Table 3's: 6 octets at 8 bits, 15 at 10 and 9 at 12, for
+  YCbCr, CLYCbCr and ICtCp alike. Table 3 lists no 16-bit entry, so none
+  is carried.
+- The pixels a pgroup covers along a row are half Table 3's coverage of 4,
+  8 and 4, which counts the pixels of both rows: Figure 5's 10-bit pgroup
+  holds Y'00 to Y'03 and Y'10 to Y'13, four columns of two rows. The SRD
+  Offset is a column of the full-bandwidth pixel matrix (section 6.1.4),
+  so it advances by the columns, and the pgroup is reported as octets and
+  columns, with the row count beside it.
+- SRD Row Numbers are 0, 2, 4 and so on. A descriptor naming an odd row
+  names no pair, and the raster mask refuses it.
+- A frame is half the height in lines, so packets per frame and the frame
+  buffer size halve with it, and placement scales a row number by half the
+  line length.
+- A height that is not a whole number of pairs is refused. Section 6.2.2
+  forbids fragmenting a pgroup, and section 6.2.1's zero fill covers only
+  the end of a row.
+- Interlaced 4:2:0 is refused, section 6.2.5 applying the sampling "only
+  to progressive scan images transmitted in a progressive manner".
+
+*Why columns rather than Table 3's coverage*: every formula above scales a
+sample position by pixels per pgroup, and the position is a column. With
+columns the receive placement, the transmit offsets and the payload search
+are the arithmetic the one-row samplings use, with the line read as a row
+pair. Coverage would make the same formulas twice too wide for 4:2:0 alone.
+
+**Where the documents leave room, the reading is stated.** Table 3 does not
+say that its coverage counts two rows; Figures 4 and 5 show it, and RFC 4175
+section 4.3 calls the 8-bit pgroup "a group of four pixels arranged in a 2x2
+matrix". RFC 4175 gives the 10-bit 4:2:0 pgroup 15 octets for four pixels,
+which holds only half the samples 15 octets carry, and lists a 16-bit
+pgroup; ST 2110-20 Table 3 gives 15 octets for eight pixels and no 16-bit
+entry, and ST 2110-20 is what this library follows. Neither document
+defines a 4:2:0 raster of odd height.
+
+A width that is not a whole number of pgroups is refused for every sampling,
+although section 6.2.1 permits one: the sender fills the final pgroup's
+spare positions with zero and the receiver ignores them. Carrying it
+changes the line length every formula above shares, and nothing has asked
+for it (§road:future).
 
 Single-component key signals read their pgroups from a table of their own
 and are otherwise this section's arithmetic unchanged (§spec:key-signals).

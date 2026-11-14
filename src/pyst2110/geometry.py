@@ -21,10 +21,12 @@ __all__ = [
     "byte_offset",
     "choose_payload_size",
     "fits_raster",
+    "frame_bytes",
     "line_bytes",
     "packets_per_frame",
     "packets_per_line",
     "pgroup",
+    "pgroup_rows",
     "raster_offset",
     "rows_per_field",
     "sample_offset",
@@ -34,46 +36,84 @@ __all__ = [
 _FIELDS_PER_FRAME = 2
 
 # SMPTE ST 2110-20 Table 1 (4:4:4) and Table 2 (4:2:2), as (octets, pixels).
-# Both families group samples within a single row, which is what lets a line
-# be a whole number of pgroups.
+# Both families group samples within a single row.
 _444_PGROUPS = {8: (3, 1), 10: (15, 4), 12: (9, 2), 16: (6, 1)}
 _422_PGROUPS = {8: (4, 2), 10: (5, 2), 12: (6, 2), 16: (8, 2)}
+# Table 3 (4:2:0), as (octets, pixels along one row). A 4:2:0 pgroup holds
+# two consecutive luminance rows (section 6.2.5, Figure 5), and the table's
+# coverage of 4, 8 and 4 pixels counts both: 2, 4 and 2 columns of two rows.
+# The columns are what the SRD Offset advances by, it being a position in the
+# full-bandwidth pixel matrix (section 6.1.4), so they are what is stored.
+# The table stops at 12 bits; RFC 4175's 16-bit entry is not carried.
+_420_PGROUPS = {8: (6, 2), 10: (15, 4), 12: (9, 2)}
 _444_SAMPLINGS = ("YCbCr-4:4:4", "CLYCbCr-4:4:4", "ICtCp-4:4:4", "RGB")
 _422_SAMPLINGS = ("YCbCr-4:2:2", "CLYCbCr-4:2:2", "ICtCp-4:2:2")
+_420_SAMPLINGS = ("YCbCr-4:2:0", "CLYCbCr-4:2:0", "ICtCp-4:2:0")
+# Sample rows one 4:2:0 pgroup spans. Section 6.1.5 signals only the first
+# row of each pair, so an SRD row is a pair of sample rows and a line of
+# pgroups carries both.
+_420_ROWS = 2
 
 # Which table a sampling reads from, so a sampling and a depth are looked up
 # in that order — the depths a sampling covers are its own.
-_FAMILY: dict[str, dict[int, tuple[int, int]]] = dict.fromkeys(
-    _444_SAMPLINGS, _444_PGROUPS
-) | dict.fromkeys(_422_SAMPLINGS, _422_PGROUPS)
+_FAMILY: dict[str, dict[int, tuple[int, int]]] = (
+    dict.fromkeys(_444_SAMPLINGS, _444_PGROUPS)
+    | dict.fromkeys(_422_SAMPLINGS, _422_PGROUPS)
+    | dict.fromkeys(_420_SAMPLINGS, _420_PGROUPS)
+)
 # XYZ is 4:4:4-shaped, but ST 2110-20 Table 1 lists it only at 12 and 16 bits.
 _FAMILY["XYZ"] = {depth: _444_PGROUPS[depth] for depth in (12, 16)}
 
-# 4:2:0 is absent on purpose. Its pgroups span two sample rows (ST 2110-20
-# Table 3), and ST 2110-20 section 6.1.5 signals only every other row, so a
-# line is not a whole number of pgroups and none of the arithmetic below
-# holds. Refusing it is better than returning a geometry that is quietly off
-# by a factor of two.
-
 
 def pgroup(video: SdpVideo) -> tuple[int, int]:
-    """Octets and pixels in one pgroup of this format."""
+    """Returns the octets in one pgroup of this format, and the pixels it
+    covers along one row.
+
+    The pixels are what the SRD Offset advances by across one pgroup. For
+    4:2:0 that is half of ST 2110-20 Table 3's coverage, which counts the
+    pixels of both rows the pgroup spans; :func:`pgroup_rows` is the other
+    factor.
+
+    Raises ``ValueError`` for a sampling or depth the tables do not list,
+    and for interlaced 4:2:0, which section 6.2.5 does not define.
+    """
     table = _FAMILY.get(video.sampling, {})
     if not table:
         raise ValueError(
             f"no pgroup for sampling={video.sampling!r}; ST 2110-20 Tables 1 "
-            f"and 2 cover {sorted(_FAMILY)}"
+            f"to 3 cover {sorted(_FAMILY)}"
         )
     if video.depth not in table:
         raise ValueError(
             f"no pgroup for sampling={video.sampling!r} at depth="
             f"{video.depth}; ST 2110-20 lists it at {sorted(table)} bits"
         )
+    if video.interlaced and video.sampling in _420_SAMPLINGS:
+        raise ValueError(
+            f"sampling={video.sampling} is progressive only: ST 2110-20 "
+            f"section 6.2.5 does not apply 4:2:0 to interlaced or PsF video"
+        )
     return table[video.depth]
 
 
+def pgroup_rows(video: SdpVideo) -> int:
+    """Returns the sample rows one pgroup of this format spans: two for
+    4:2:0 and one for every other sampling.
+
+    It is also the step between the row numbers SRD headers carry, because
+    ST 2110-20 section 6.1.5 signals "only every other Sample Row" for
+    4:2:0, and the number of sample rows one line of pgroups holds.
+    """
+    pgroup(video)
+    return _420_ROWS if video.sampling in _420_SAMPLINGS else 1
+
+
 def line_bytes(video: SdpVideo) -> int:
-    """Octets one active sample row occupies."""
+    """Returns the octets one SRD row of pgroups occupies.
+
+    That is one active sample row, or for 4:2:0 the pair of rows each
+    pgroup spans (:func:`pgroup_rows`), which one SRD Row Number names.
+    """
     group_bytes, group_pixels = pgroup(video)
     if video.width <= 0:
         raise ValueError(f"a width of {video.width} is not an image")
@@ -123,9 +163,38 @@ def packets_per_frame(video: SdpVideo, payload_size: int) -> int:
 
     Interlace does not change the total: the two fields between them carry
     every row of the frame once, so only the field each row is announced in
-    differs (ST 2110-20 section 6.1.5).
+    differs (ST 2110-20 section 6.1.5). A 4:2:0 line carries two rows, so
+    its frame takes half the lines.
     """
-    return packets_per_line(video, payload_size) * video.height
+    return packets_per_line(video, payload_size) * _lines(video)
+
+
+def frame_bytes(video: SdpVideo) -> int:
+    """Returns the octets of sample data in one frame.
+
+    The size of the frame buffer :func:`raster_offset` places into: every
+    line of pgroups end to end, which for 4:2:0 is half the height in lines
+    (:func:`pgroup_rows`).
+    """
+    return line_bytes(video) * _lines(video)
+
+
+def _lines(video: SdpVideo) -> int:
+    """Lines of pgroups in a frame, refusing a height no whole number of
+    pgroups covers.
+
+    ST 2110-20 section 6.2.2: pgroups "shall not be fragmented", and a 4:2:0
+    raster of odd height ends in a row no two-row pgroup can carry.
+    """
+    rows = pgroup_rows(video)
+    if video.height <= 0:
+        raise ValueError(f"a height of {video.height} is not an image")
+    if video.height % rows:
+        raise ValueError(
+            f"a height of {video.height} is not a whole number of {rows}-row "
+            f"{video.sampling} pgroups"
+        )
+    return video.height // rows
 
 
 def rows_per_field(video: SdpVideo) -> int:
@@ -165,7 +234,8 @@ def fits_raster(
 
     An interlaced flow numbers rows within a field, so the bound there is
     :func:`rows_per_field`; which field is the F bit's, reported separately
-    (ST 2110-20 section 6.1.5).
+    (ST 2110-20 section 6.1.5). A 4:2:0 flow numbers only the first row of
+    each pair it carries, so an odd row there names no place either.
 
     Segment lengths are not checked. Under a header-data split the payload
     sits in a buffer this library never sees, so bounding the extent stays
@@ -175,8 +245,9 @@ def fits_raster(
     positions = np.asarray(line, dtype=np.int64)
     samples = np.asarray(offset, dtype=np.int64)
     within_image = (positions >= 0) & (positions < rows)
+    signalled = positions % pgroup_rows(video) == 0
     within_row = (samples >= 0) & (samples < video.width)
-    fits: NDArray[np.bool_] = within_image & within_row
+    fits: NDArray[np.bool_] = within_image & signalled & within_row
     return fits
 
 
@@ -227,14 +298,15 @@ def raster_offset(
     """Where a descriptor's data belongs in a frame buffer, in octets.
 
     A payload header's two position fields resolved against the format: the
-    row scaled by the line length, plus the sample position scaled by the
-    pgroup. The receive path's placement and the transmit path's
-    ``frame_offset_octets`` are this one expression, so both are it rather
-    than each writing it out.
+    row's line scaled by the line length, plus the sample position scaled by
+    the pgroup. A 4:2:0 row number is the first of a pair, so its line is
+    half of it, and an odd one floors into the pair above. The receive path's
+    placement and the transmit path's ``frame_offset_octets`` are this one
+    expression, so both are it rather than each writing it out.
 
     Unbounded, as :func:`byte_offset` is: a row past the image scales like any
     other, and the two are indistinguishable here. Mask with
     :func:`fits_raster` before the result indexes anything.
     """
-    rows = np.asarray(line, dtype=np.int64)
-    return (rows * line_bytes(video) + byte_offset(video, offset)).astype(np.int64)
+    lines = np.asarray(line, dtype=np.int64) // pgroup_rows(video)
+    return (lines * line_bytes(video) + byte_offset(video, offset)).astype(np.int64)

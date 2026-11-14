@@ -24,10 +24,12 @@ from pyst2110.framing import frame_starts as frame_starts
 from pyst2110.geometry import byte_offset as byte_offset
 from pyst2110.geometry import choose_payload_size as choose_payload_size
 from pyst2110.geometry import fits_raster as fits_raster
+from pyst2110.geometry import frame_bytes as frame_bytes
 from pyst2110.geometry import line_bytes as line_bytes
 from pyst2110.geometry import packets_per_frame as packets_per_frame
 from pyst2110.geometry import packets_per_line as packets_per_line
 from pyst2110.geometry import pgroup as pgroup
+from pyst2110.geometry import pgroup_rows as pgroup_rows
 from pyst2110.geometry import raster_offset as raster_offset
 from pyst2110.geometry import rows_per_field as rows_per_field
 from pyst2110.geometry import sample_offset as sample_offset
@@ -115,6 +117,7 @@ __all__ = [
     "format_group_sdp",
     "format_sdp",
     "frame_boundaries",
+    "frame_bytes",
     "frame_starts",
     "line_bytes",
     "max_payload_size",
@@ -128,6 +131,7 @@ __all__ = [
     "parse_sdp",
     "parse_video_format",
     "pgroup",
+    "pgroup_rows",
     "raster_offset",
     "read_schedule",
     "read_times",
