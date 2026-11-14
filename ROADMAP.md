@@ -180,6 +180,52 @@ parses with one `SdpConformanceWarning` naming it; one missing `depth` or
 `sampling` raises naming it; and every fixture in the suite parses under the
 suite's error filter, given what it lacked.
 
+## One essence over several flows §road:multi-stream
+
+An RP 2110-23 group reads as its first constituent with no warning, and
+nothing here writes one or says where a constituent's pixel sits in the
+essence (§spec:multi-stream).
+
+### The division mapping §road:division-mapping
+
+Map essence pixels to constituent sub-image pixels and back for four- and
+sixteen-way two-sample interleave and square division, with the reference
+`split` and `reassemble`, in `src/pyst2110/division.py`
+(§spec:multi-stream, §spec:geometry).
+
+### The group parse §road:group-parse
+
+Read an `a=group:MULTI-2SI` or `MULTI-SD` document into its division mode,
+ordered constituents and shared sub-image format with `parse_group_sdp`,
+and refuse such a document in `parse_sdp` and `parse_video_format`, in
+`src/pyst2110/sdp.py` (§spec:multi-stream, §spec:sdp). Depends on
+§road:division-mapping.
+
+### The group offer §road:group-offer
+
+Write a group document with `format_group_sdp` in `src/pyst2110/sdp.py`,
+export the group and division surface from `src/pyst2110/__init__.py`, and
+document it in `README.md` (§spec:multi-stream). Depends on
+§road:group-parse.
+
+**Verify:** Hand-computed mappings, written into the tests from RP 2110-23
+Figures 1 to 5 and not from the implementation, hold for a 7680x4320
+essence. Four-way two-sample interleave sends essence `(6, 3)` to
+constituent 4 at `(2, 1)` and `(5, 0)` to constituent 1 at `(3, 0)`. Four-way
+square division sends `(3840, 2160)` to constituent 4 at `(0, 0)` and
+`(4000, 100)` to constituent 2 at `(160, 100)`. Sixteen-way two-sample
+interleave reproduces Figure 2's first four rows, `1 1 5 5 2 2 6 6`,
+`9 9 13 13 10 10 14 14`, `3 3 7 7 4 4 8 8` and `11 11 15 15 12 12 16 16`,
+and sixteen-way square division reproduces Figure 5's numbering. `reassemble`
+of `split` returns the essence unchanged for every mode and count. Annex B's
+four-way 2160p59.94 document parses as `MULTI-2SI`, four constituents in
+order, sub-image 1920x1080 and essence 3840x2160. A written four-way
+7680x4320 group parses back to the same flows, format and mode, at both
+divisions, and `parse_sdp` refuses it naming `parse_group_sdp`.
+Constituents of unequal format, a tag out of position, `PHASED`, a group
+with `DUP` pairs, and two constituents on one address, port and sender are
+each refused naming the cause.
+
 ## Future §road:future
 
 - **ipmx**: IPMX is ST 2110 with a different SDP profile and variable
@@ -208,5 +254,11 @@ suite's error filter, given what it lacked.
   interlaced — which Table 1's 1125-line row covers — rather than as the
   segment schedule it is; and an interlaced capture that opens mid-frame
   pairs fields by arrival order unless the caller supplies the F bit.
+- **phased-groups**: RP 2110-23's `PHASED` division, a high-frame-rate
+  essence carried as lower-rate phases with differing RTP timestamps.
+  §spec:multi-stream refuses it by name until something asks for it.
+- **redundant-groups**: RP 2110-23 section 5.4's ST 2022-7 over a group,
+  `P` and `S` group lines with an `a=group:DUP` per constituent. It joins
+  §spec:redundancy's pair parse to §spec:multi-stream's group parse.
 - **compressed-2110-22**: JPEG XS carries its own payload header
   (RFC 9134) and no raster geometry, so it shares only the RTP parse.
