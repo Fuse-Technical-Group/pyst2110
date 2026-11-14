@@ -136,6 +136,7 @@ def test_a_group_of_a_count_the_rp_does_not_define_is_refused(count: int):
         ("exactframerate=60000/1001", "exactframerate=50", "frame rate"),
         ("colorimetry=BT709", "colorimetry=BT2020", "colorimetry"),
         ("TCS=SDR", "TCS=PQ", "TCS"),
+        ("TCS=SDR", "TCS=SDR; RANGE=FULL", "range"),
     ],
 )
 def test_constituents_of_unequal_format_are_refused(old: str, new: str, named: str):
@@ -145,6 +146,19 @@ def test_constituents_of_unequal_format_are_refused(old: str, new: str, named: s
     blocks[3] = blocks[3].replace(old, new)
     with pytest.raises(ValueError, match=named):
         parse_group_sdp("m=video".join(blocks))
+
+
+def test_a_constituent_spelling_out_the_default_range_agrees_with_one_omitting_it():
+    """ST 2110-20 section 7.3: an absent RANGE is NARROW, so the two
+    constituents declare one range."""
+    blocks = _ANNEX_B.split("m=video")
+    blocks[3] = blocks[3].replace("TCS=SDR", "TCS=SDR; RANGE=NARROW")
+    assert parse_group_sdp("m=video".join(blocks)).video.range == "NARROW"
+
+
+def test_constituents_carrying_one_range_read_as_that_range():
+    group = parse_group_sdp(_ANNEX_B.replace("TCS=SDR", "TCS=SDR; RANGE=FULL"))
+    assert group.video.range == "FULL"
 
 
 def test_interlaced_constituents_are_refused():

@@ -491,8 +491,8 @@ sampling, and interprets none (§req:constraints).
 
 Enough of RFC 4566 and ST 2110-20's `a=fmtp:` to name a flow — connection
 address, media port, source filter — and its video format: width, height,
-frame rate, sampling, depth, colorimetry, interlace, and the sender's
-maximum UDP size.
+frame rate, sampling, depth, colorimetry, sample range, interlace, and
+the sender's maximum UDP size.
 
 A sender's required parameters are not one document's. ST 2110-20 section
 7.2 requires eight; ST 2110-21 section 8.1 adds `TP` for every video RTP
@@ -566,6 +566,24 @@ in whole microseconds, bounded inside one frame period as section 6.2
 defines TR_OFFSET, and `CMAX` as the sender's claim about its own peak.
 Both are read as absent-means-default and written only when set, like
 `MAXUDP` above; §spec:timing is what consumes them.
+
+`RANGE`, ST 2110-20 section 7.3, says which encoding range the sample
+values use, and is carried through uninterpreted as colorimetry is. An
+absent `RANGE` is `NARROW`, so the format reads `NARROW` from an offer that
+omits it and writes the parameter only for `FULLPROTECT` or `FULL`, after
+`interlace` and before `MAXUDP` in the order section 7.3 lists them. The
+allowed set depends on the colorimetry: beside `BT2100` section 7.3 allows
+`NARROW` and `FULL`, the two ranges of ITU-R BT.2100 Table 9, and elsewhere
+it adds `FULLPROTECT`, the permitted range of SMPTE RP 2077. A value outside
+the set its colorimetry allows is refused on both paths, naming the
+parameter. An RP 2110-23 group carries one range, because the shared format
+carries it (§spec:multi-stream).
+
+*Why refuse an unknown range rather than carry it*: a consumer converting
+samples to light reads the range to place black and white, so a token it
+cannot recognise changes every pixel it produces. Refusing it at the parse
+names the offer, where carrying it hands the consumer a value no branch of
+its conversion expects.
 
 A multicast offer says who may send, and says so deliberately.
 ST 2110-10 section 8.4 asks a sender to signal `a=source-filter`, and

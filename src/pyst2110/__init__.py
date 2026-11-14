@@ -38,6 +38,10 @@ from pyst2110.redundancy import reconstruct as reconstruct
 from pyst2110.rtp import FIXED_HEADER_SIZE as FIXED_HEADER_SIZE
 from pyst2110.rtp import RtpHeaders as RtpHeaders
 from pyst2110.rtp import parse_rtp as parse_rtp
+from pyst2110.sdp import RANGE_FULL as RANGE_FULL
+from pyst2110.sdp import RANGE_FULLPROTECT as RANGE_FULLPROTECT
+from pyst2110.sdp import RANGE_NARROW as RANGE_NARROW
+from pyst2110.sdp import RANGES as RANGES
 from pyst2110.sdp import RTP_CLOCK_RATE as RTP_CLOCK_RATE
 from pyst2110.sdp import SENDER_TYPE_NARROW as SENDER_TYPE_NARROW
 from pyst2110.sdp import SENDER_TYPE_NARROW_LINEAR as SENDER_TYPE_NARROW_LINEAR
@@ -78,6 +82,10 @@ __all__ = [
     "MULTI_2SI",
     "MULTI_SD",
     "PACKET_HEADER_SIZE",
+    "RANGES",
+    "RANGE_FULL",
+    "RANGE_FULLPROTECT",
+    "RANGE_NARROW",
     "RTP_CLOCK_RATE",
     "SENDER_TYPES",
     "SENDER_TYPE_NARROW",
