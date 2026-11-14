@@ -51,6 +51,15 @@ fits = fits_raster(video, payload.line, payload.offset_samples)
 starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
 ```
 
+The offsets index a frame buffer of `frame_bytes(video)` octets, which
+holds the pgroups line after line in wire order. Every sampling ST 2110-20
+lists is carried: RGB and YCbCr, CLYCbCr and ICtCp at 4:4:4, 4:2:2 and
+4:2:0, and XYZ, at the depths its tables give. A 4:2:0 pgroup spans two
+rows, so one line of that buffer holds a pair of rows, and `pgroup_rows`
+reports the two. The sample range a flow declares with `RANGE` is
+`video.range`, one of `RANGES`, and like the colorimetry it is carried
+without interpretation.
+
 Sending is the same shape in reverse. A frame's headers are built once
 for a format and payload size, then stamped per frame with the only two
 fields that move — the sequence numbers and the media timestamp:
@@ -90,6 +99,35 @@ than read as a single-leg offer, and `parse_sdp` refuses a grouped offer
 for the same reason: a sender that emitted one leg where two were meant
 sends unprotected essence and reports success.
 
+One essence over several flows is one offer too. SMPTE RP 2110-23 carries
+a picture as four or sixteen ST 2110-20 flows, each a sub-image, grouped
+by `a=group:MULTI-2SI` (two-sample interleave) or `a=group:MULTI-SD`
+(square division). `format_group_sdp` writes the group from the
+constituent flows and their shared sub-image format, and
+`parse_group_sdp` reads it back:
+
+```python
+from pyst2110 import format_group_sdp, parse_group_sdp, to_essence
+
+offer = format_group_sdp(flows, sub_image, session_name="my sender")
+group = parse_group_sdp(offer)  # division, flows in order, sub-image format
+raster = {
+    "width": group.essence_width,
+    "height": group.essence_height,
+    "division": group.division,
+    "count": len(group.flows),
+}
+x, y = to_essence(2, columns, row, **raster)  # where constituent 2's pixels sit
+```
+
+`parse_sdp` and `parse_video_format` refuse a group document and name
+`parse_group_sdp`, because a constituent read alone is a quarter of the
+picture. `pyst2110.division` maps essence pixels to constituent pixels
+and back, closed form over coordinate arrays, and its `split` and
+`reassemble` are the reference move an accelerated gather is checked
+against. The temporal `PHASED` division and ST 2022-7 over a group are
+refused by name.
+
 `session_name` defaults to the single space RFC 4566 section 5.3 prescribes
 for a session with no meaningful name — and at least one transmit SDK refuses
 it, so name the session where a sender will read the offer back. NVIDIA
@@ -109,8 +147,9 @@ queueing two frames at once copies the first.
 Everything is re-exported from the top-level package, and the
 docstrings there are the authority; `help(pyst2110)` is the index.
 
-Both paths are built: SDP parsing and emit — the single-leg offer and the
-ST 2022-7 pair — the RFC 3550 header parse, format geometry, sequence and
+Both paths are built: SDP parsing and emit — the single-leg offer, the
+ST 2022-7 pair and the RP 2110-23 group — the RP 2110-23 division mapping,
+the RFC 3550 header parse, format geometry, sequence and
 frame tracking, RFC 4175 payload descriptors, the transmit header block,
 the ST 2022-7 reconstruction of one flow from two legs, and the ST 2110-21
 timing model — read schedules, sender limits, and the two leaky buckets

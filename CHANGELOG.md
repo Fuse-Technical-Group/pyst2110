@@ -1,3 +1,26 @@
+# [0.11.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.10.0...v0.11.0) (2026-11-14)
+
+
+### Bug Fixes
+
+* **sdp:** refuse 4:2:0 offers that no format or division defines ([610c771](https://github.com/Fuse-Technical-Group/pyst2110/commit/610c771717d7c2107dac3ee752ca17927cc40efb))
+
+
+### Features
+
+* **geometry:** carry 4:2:0 sampling as pgroups over a row pair ([2a2320a](https://github.com/Fuse-Technical-Group/pyst2110/commit/2a2320ae64a8a2da0c0fe76169edd1be91012ba8))
+* **sdp:** carry ST 2110-20 RANGE on the video format ([42b9633](https://github.com/Fuse-Technical-Group/pyst2110/commit/42b9633c118d26c021b8738867e50f893273d1fe))
+
+# [0.10.0](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.9.1...v0.10.0) (2026-11-14)
+
+
+### Features
+
+* **division:** map essence pixels to RP 2110-23 constituents and back ([04039c2](https://github.com/Fuse-Technical-Group/pyst2110/commit/04039c2374eed24bf8bd36e69479a67a6ce0e442))
+* export the group offer and division mapping from the package ([a594798](https://github.com/Fuse-Technical-Group/pyst2110/commit/a594798deaae97664779428c77a4e4cbe19d2a71))
+* **sdp:** read an RP 2110-23 group as one offer ([5162136](https://github.com/Fuse-Technical-Group/pyst2110/commit/5162136140a72aeb451d9387af904e3267df4ddd))
+* **sdp:** write an RP 2110-23 group as one offer ([fd54ba4](https://github.com/Fuse-Technical-Group/pyst2110/commit/fd54ba4cab51097b5c3dbb684f4f064cef12b50d))
+
 ## [0.9.1](https://github.com/Fuse-Technical-Group/pyst2110/compare/v0.9.0...v0.9.1) (2026-09-18)
 
 
