@@ -86,9 +86,9 @@ a function nothing has looked at.
 
 **Not a regression and not yet a fault.** No consumer calls it per chunk
 today, so nothing is paying this. What makes it worth a section rather than a
-Future bullet is that a consumer is coming: backlit_molecule's ST 2022-7 work
-is specified, and the ConvertIP bench rig already runs paired legs, so the
-first dual-leg receiver walks into a frame budget a quarter spent before it
+Future bullet is that a consumer is coming: dual-leg ST 2022-7 reception is
+specified downstream, and paired-leg senders already exist on a test bench, so
+the first dual-leg receiver walks into a frame budget a quarter spent before it
 places a pixel. §req:priorities is the standing obligation — a parse is fast
 enough for the frame budget — and §spec:redundancy states the arithmetic
 without stating its cost, which is the gap a `/compose:plan` pass should
