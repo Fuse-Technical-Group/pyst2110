@@ -892,7 +892,7 @@ not do (§spec:scope-boundary).
 
 ## One essence over several flows §spec:multi-stream
 
-*Status: not started*
+*Status: complete*
 
 Some routers and cameras carry a 4320-line picture as four ST 2110-20
 flows, each a 2160-line sub-image, because each flow then fits a
@@ -904,53 +904,43 @@ Vendors and router documentation often call it ST 2110-23; it is published
 as a recommended practice, and its text is public on SMPTE's document
 library.
 
-The single-flow parse reads a quarter of that document.
-`parse_sdp` takes the first `m=video` block and `parse_video_format` the
-first fmtp line, so a four-way 7680x4320 offer reads as one 3840x2160 flow
-with no warning, and a receiver provisioned from it joins one constituent
-of four and reports success. That is the failure §spec:redundancy refuses
-for a redundant pair, reached through a different grouping.
+The single-flow parse used to read a quarter of that document. `parse_sdp`
+took the first `m=video` block and `parse_video_format` the first fmtp
+line, so a four-way 7680x4320 offer read as one 3840x2160 flow with no
+warning, and a receiver provisioned from it joined one constituent of four
+and reported success. That is the failure §spec:redundancy refuses for a
+redundant pair, reached through a different grouping, and both single-flow
+parses now refuse a document carrying any of RP 2110-23's group semantics,
+naming `parse_group_sdp`.
 
 **The group is one offer.** RFC 5888's session-level `a=group:` carries the
 grouping, with semantics RP 2110-23 section 5.3 defines, and each
-constituent is an `m=video` block ending in `a=mid:` with its own `c=`,
-source filter and fmtp line. `parse_group_sdp` shall read that document
-into the division mode, the constituent flows in group order, and the one
-sub-image format they share. `format_group_sdp` shall write it.
-`parse_sdp` and `parse_video_format` shall refuse a document carrying one
-of RP 2110-23's group semantics, naming `parse_group_sdp`, as `parse_sdp`
-refuses `a=group:DUP`.
+constituent is an `m=video` block with its own `c=`, source filter and
+fmtp line, ending in `a=mid:` as section 5.3 lays it out. `parse_group_sdp`
+reads the document into the division mode, the constituent flows in group
+order, and the one sub-image format they share; `format_group_sdp` writes
+it.
 
-The library carries two of the RP's three semantics:
-
-- `MULTI-2SI`, two-sample interleave (section 5.2.3): a 2160-line image
-  into four 1080-line sub-images per SMPTE ST 425-5, a 4320-line image into
-  four 2160-line sub-images per SMPTE ST 2082-12, or a 4320-line image into
-  sixteen 1080-line sub-images by applying the division twice.
-- `MULTI-SD`, square division (section 5.2.4): the image cut into
-  quadrants per SMPTE ST 435-1, and for sixteen, each quadrant cut again.
-  The RP deprecates it for new designs and keeps its descriptors for
-  signals already built that way, so the parse reads it and the writer
-  writes it only when the caller names it. The default division is
-  `MULTI-2SI`.
-
-A group shall name four or sixteen constituents, the two counts the RP
-defines for these modes. `PHASED`, the temporal division of section 5.2.2,
-is refused by name: its phases carry different RTP timestamps and a
-receiver interleaves frames, which is a frame schedule this library has no
-model of, and nothing here asks for it (§road:future).
+The library carries two of the RP's three semantics, at the four and
+sixteen constituents the RP defines for them: `MULTI-2SI`, two-sample
+interleave (section 5.2.3), and `MULTI-SD`, square division (section
+5.2.4). The RP deprecates square division for new designs and keeps its
+descriptors for signals already built that way, so the parse reads it and
+the writer writes it only when the caller names it. `PHASED`, the temporal
+division of section 5.2.2, is refused by name: its phases carry different
+RTP timestamps and a receiver interleaves frames, which is a frame schedule
+this library has no model of, and nothing here asks for it (§road:future).
 
 **The essence raster is derived, because no line carries it.** Each
 constituent's fmtp line describes its own sub-image: RP 2110-23 Annex B
 writes `width=1920; height=1080` for each of four constituents of a
-2160p59.94 picture, and a commercial implementation writes its
-packetiser's sub-image dimensions the same way. The essence is two
-sub-images wide and two high for four constituents, and four by four for
-sixteen. The parse shall refuse a group whose constituents differ in
-sampling, depth, dimensions, frame rate, colorimetry, TCS or interlace,
-because the division assumes equal sub-images and an essence assembled
-from unequal ones has no defined raster. Interlaced constituents are
-refused, the RP defining no field structure under division.
+2160p59.94 picture. The essence is two sub-images wide and two high for
+four constituents, and four by four for sixteen. The group returns one
+format, so the parse refuses constituents that differ in anything that
+format carries, and in TCS, which it does not: the division assumes equal
+sub-images, and an essence assembled from unequal ones has no defined
+raster. Interlaced constituents are refused, the RP defining no field
+structure under division.
 
 **Constituent order is group order.** The RP numbers the constituents 1 to
 N and writes those numbers as the tags, so position in the `a=group:` line
@@ -963,59 +953,38 @@ which sub-image a flow carries is one a receiver assembles wrong.
 warns about.** Section 5.5 requires every constituent of a 2SI or square
 division group to carry the same RTP timestamps and the same `TROFF`, and
 section 5.6 requires a distinct multicast destination address per
-constituent. The writer emits one format and one `TROFF` for every block,
-and refuses two constituents on one multicast address. The reader takes a
-differing `TROFF` or a shared multicast address on distinct ports with an
-`SdpConformanceWarning`, and refuses two constituents naming one address,
-port and sender, which no receiver can tell apart. RTP timestamps are on
-the wire, and §spec:transmit-headers stamps them from the frame index, so
-constituents built from one format and one index carry equal timestamps by
-construction.
+constituent. The writer emits one format for every block and refuses two
+constituents on one multicast address. The reader takes a differing `TROFF`
+or a shared multicast address with an `SdpConformanceWarning`, and refuses
+two constituents naming one address, port and sender, which no receiver can
+tell apart. RTP timestamps are on the wire, and §spec:transmit-headers
+stamps them from the frame index, so constituents built from one format and
+one index carry equal timestamps by construction.
 
 ST 2022-7 over a group (section 5.4) duplicates the group line with `P`
-and `S` tags and pairs each constituent with `a=group:DUP`. The parse
-refuses that document by name (§road:future): it is a group of pairs,
-and §spec:redundancy's pair parse and this section's group parse each read
-half of it.
+and `S` tags and pairs each constituent with `a=group:DUP`. Both the group
+parse and the pair parse refuse that document by name (§road:future): it is
+a group of pairs, and each parse reads half of it.
 
 **The division is a pure mapping between positions.** `pyst2110.division`
-maps an essence pixel `(X, Y)` to a constituent and a sub-image pixel
-`(x, y)` and back, closed form and vectorised over coordinate arrays, for
-each mode and count. For four-way two-sample interleave, as RP 2110-23
-Figure 1 draws it:
+maps an essence pixel to a constituent and a sub-image pixel and back,
+closed form and vectorised over coordinate arrays, for each mode and count.
+Sixteen-way division applies the four-way mapping to the essence and again
+to each intermediate sub-image, which reproduces Figure 2's sample grid for
+two-sample interleave and Figure 5's numbering for square division. A 4:2:2
+pgroup is two pixels, so a two-sample-interleave pair is exactly one
+pgroup, and each constituent carries whole pgroups with their chroma
+intact.
 
-- the constituent is `1 + 2·(Y mod 2) + ((X div 2) mod 2)`;
-- the sub-image pixel is `x = 2·(X div 4) + (X mod 2)`, `y = Y div 2`.
-
-Even essence rows go to constituents 1 and 2, odd rows to 3 and 4, and
-along a row, horizontal pixel pairs alternate between the two. For
-four-way square division, as Figure 3 draws it, the constituent is
-`1 + 2·(Y div (H/2)) + (X div (W/2))` and the sub-image pixel is the
-essence pixel less its quadrant's origin. Sixteen-way division applies the
-four-way mapping to the essence and again to each intermediate sub-image,
-and numbers the result `4·(i − 1) + j` for intermediate `i` and
-constituent `j` within it. That composition reproduces Figure 2's sample
-grid for two-sample interleave and Figure 5's numbering for square
-division.
-
-A 4:2:2 pgroup is two pixels, so a two-sample-interleave pair is exactly
-one pgroup, and each constituent carries whole pgroups with their chroma
-intact. The essence width shall be a multiple of four and its height even
-for four-way two-sample interleave, and a multiple of eight and of four
-for sixteen-way. Square division needs only that the essence divides into
-equal quadrants. Each sub-image width is then checked by §spec:geometry
-like any other raster.
-
-**A reference split and reassembly.** `split` cuts an essence array of
-shape `(H, W, …)` into its constituents' sub-image arrays, and
-`reassemble` puts them back, by the mapping above. Both move whole
-elements and read none, so any dtype and any trailing axes work. They
-exist as the oracle: an accelerated receiver that gathers each constituent
-straight into an essence buffer is checked against `reassemble` over the
-sub-images a reference gather produced. The same mapping is the
-descriptors' placement carried one step further, and it stays this side of
-the scope boundary for the same reason the placement does: it says where a
-sample goes, and the consumer's kernel performs the move
+**A reference split and reassembly.** `split` cuts an essence array into
+its constituents' sub-image arrays and `reassemble` puts them back, by the
+mapping. Both move whole elements and read none, so any dtype and any
+trailing axes work. They exist as the oracle: an accelerated receiver that
+gathers each constituent straight into an essence buffer is checked against
+`reassemble` over the sub-images a reference gather produced. The mapping
+is the descriptors' placement carried one step further, and it stays this
+side of the scope boundary for the same reason the placement does: it says
+where a sample goes, and the consumer's kernel performs the move
 (§spec:scope-boundary).
 
 *Why a group parse rather than a wider `parse_sdp`*: a caller holding one
