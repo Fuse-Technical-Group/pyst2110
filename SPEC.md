@@ -1085,6 +1085,14 @@ raster small enough to work out on paper, the interlaced layout, and the
 target format each have one, the last as named packets of a frame too large
 to write out whole.
 
+Every sampling and depth the pgroup tables list also runs at rasters no
+broadcast standard names: cinema, tiled, portrait, odd-height, one pgroup
+wide, and a line no packet near the UDP limit divides. Each case derives
+the frame's size from the samples a pixel carries rather than from the
+tables, then builds the frame's headers, parses them back and places
+them, and round-trips the offer. A slip in a table, or a geometry that
+holds only at broadcast rasters, fails there.
+
 Captures from real senders are the strongest evidence available without a
 NIC. Where a fixture is taken off the wire its provenance is recorded
 beside it — which sender, which format — because a capture whose origin is

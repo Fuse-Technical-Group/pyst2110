@@ -51,6 +51,15 @@ fits = fits_raster(video, payload.line, payload.offset_samples)
 starts = raster_offset(video, payload.line[fits], payload.offset_samples[fits])
 ```
 
+The offsets index a frame buffer of `frame_bytes(video)` octets, which
+holds the pgroups line after line in wire order. Every sampling ST 2110-20
+lists is carried: RGB and YCbCr, CLYCbCr and ICtCp at 4:4:4, 4:2:2 and
+4:2:0, and XYZ, at the depths its tables give. A 4:2:0 pgroup spans two
+rows, so one line of that buffer holds a pair of rows, and `pgroup_rows`
+reports the two. The sample range a flow declares with `RANGE` is
+`video.range`, one of `RANGES`, and like the colorimetry it is carried
+without interpretation.
+
 Sending is the same shape in reverse. A frame's headers are built once
 for a format and payload size, then stamped per frame with the only two
 fields that move — the sequence numbers and the media timestamp:
