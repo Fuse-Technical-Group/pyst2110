@@ -42,6 +42,9 @@ write it again.
 ### Prior art §spec:prior-art
 
 The reference implementations are the SMPTE and IETF documents themselves.
+SMPTE publishes its standards free at `https://pub.smpte.org/doc/`, one
+page a document (`https://pub.smpte.org/doc/st2110-20/`) listing each
+published version. Local copies live in `vendor/`, which git ignores.
 GStreamer's `rtpvrawdepay`/`rtpvrawpay` and FFmpeg's `rtpdec_rfc4175` are
 the closest working code; both are per-packet C inside a media framework
 rather than a vectorized library, and neither is importable from Python.
@@ -968,7 +971,7 @@ constituent streams, each a valid ST 2110-20 and ST 2110-21 stream on its
 own (section 5.1), and groups them in one SDP document (section 5.3).
 Vendors and router documentation often call it ST 2110-23; it is published
 as a recommended practice, and its text is public on SMPTE's document
-library.
+library (`https://pub.smpte.org/doc/rp2110-23/`).
 
 The single-flow parse used to read a quarter of that document. `parse_sdp`
 took the first `m=video` block and `parse_video_format` the first fmtp
