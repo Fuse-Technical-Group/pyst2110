@@ -184,3 +184,50 @@ def test_the_measured_differential_is_inside_the_clocks_resolution(
     )
     assert abs(r.skew_min_ns) < 1_000
     assert abs(r.skew_max_ns) < 1_000
+
+
+# Boundaries a mutation run found untested.
+
+
+def _arrays(*values: int) -> np.ndarray:
+    return np.array(values, dtype=np.int64)
+
+
+def test_legs_overlapping_in_one_number_are_a_pair() -> None:
+    pair = reconstruct(
+        _arrays(1, 2, 3), _arrays(10, 20, 30), _arrays(3, 4), _arrays(31, 41)
+    )
+    assert pair.span == (3, 3)
+    assert pair.paired == 1
+    assert pair.skew_min_ns == pair.skew_max_ns == 1
+
+
+def test_the_second_legs_numbers_outside_the_overlap_are_not_counted() -> None:
+    a = np.arange(5, 11, dtype=np.int64)
+    b = np.arange(0, 16, dtype=np.int64)
+    pair = reconstruct(a, a * 10, b, b * 10)
+    assert pair.span == (5, 10)
+    assert pair.delivered == 6
+    assert pair.recovered_a == 0
+    assert pair.recovered_b == 0
+
+
+def test_interleaved_legs_with_nothing_in_common_measure_no_skew() -> None:
+    pair = reconstruct(_arrays(1, 3, 5), _arrays(1, 3, 5), _arrays(2, 4), _arrays(2, 4))
+    assert pair.paired == 0
+    assert pair.skew_min_ns == 0
+    assert pair.skew_max_ns == 0
+    assert pair.lost == 0
+
+
+def test_a_leg_out_of_order_with_its_own_duplicate_counts_its_earliest_copy() -> None:
+    # The first leg carries number 2 twice, the later copy listed first.
+    pair = reconstruct(
+        _arrays(3, 2, 1, 2),
+        _arrays(300, 250, 100, 200),
+        _arrays(1, 2, 3),
+        _arrays(110, 210, 310),
+    )
+    assert pair.delivered == 3
+    assert pair.duplicated == 3
+    assert pair.skew_min_ns == pair.skew_max_ns == 10

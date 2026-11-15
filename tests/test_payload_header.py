@@ -885,3 +885,36 @@ def test_a_convertip_chunk_loses_a_quarter_without_the_payload_buffer():
     assert result.unreadable_count == 10
     assert result.overflowed_count == 0
     assert result.packet.size == 30
+
+
+# Boundaries a mutation run found untested.
+
+
+def test_a_chunk_narrower_than_one_payload_header_is_refused():
+    with pytest.raises(ValueError, match="at least 8 columns"):
+        parse_payload_headers(np.zeros((1, 7), dtype=np.uint8), np.array([0]))
+    parse_payload_headers(np.zeros((1, 8), dtype=np.uint8), np.array([0]))
+
+
+def test_octets_past_each_cut_in_the_header_buffer_are_never_read():
+    """A receiver writes up to the cut and leaves the rest of the header row
+    as it was, so the octets past it are the previous packet's. A gathered
+    window reads the payload row there instead."""
+    extended = list(_THREE_SRDS)
+    extended[0] = 0x90  # V=2, X=1, CC=0
+    extended[12:12] = [0xBE, 0xDE, 0x00, 0x01, 0xDE, 0xAD, 0xBE, 0xEF]
+    packets = (_THREE_SRDS, extended)
+    cuts = (20, 28)
+    stride = 32
+    heads = np.full((2, stride), 0xFF, dtype=np.uint8)
+    for row, (packet, cut) in enumerate(zip(packets, cuts, strict=True)):
+        heads[row, :cut] = packet[:cut]
+    tails = chunk(*[packet[cut:] for packet, cut in zip(packets, cuts, strict=True)])
+    sizes = np.array(cuts, dtype=np.int64)
+    offsets = parse_rtp(heads, sizes=sizes).payload_offset
+
+    result = parse_payload_headers(heads, offsets, sizes=sizes, payloads=tails)
+    whole = parse(*packets)
+    assert result.line.tolist() == whole.line.tolist()
+    assert result.offset_samples.tolist() == whole.offset_samples.tolist()
+    assert result.length.tolist() == whole.length.tolist()

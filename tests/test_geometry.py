@@ -442,3 +442,36 @@ def test_the_last_packet_of_a_line_ends_exactly_at_the_line():
     starts = np.arange(per_line, dtype=np.int64) * payload // group_bytes * group_pixels
     assert byte_offset(current, starts).tolist() == [0, 1200, 2400, 3600]
     assert byte_offset(current, starts)[-1] + payload == line_bytes(current)
+
+
+# Boundaries a mutation run found untested.
+
+_RGB8 = SdpVideo(width=8, height=4, frame_rate=Fraction(50), depth=8, sampling="RGB")
+_420_8 = SdpVideo(
+    width=4, height=4, frame_rate=Fraction(50), depth=8, sampling="YCbCr-4:2:0"
+)
+
+
+def test_a_limit_of_one_pgroup_chooses_one_pgroup():
+    group_bytes, _ = pgroup(_RGB8)
+    assert choose_payload_size(_RGB8, group_bytes) == group_bytes
+
+
+def test_a_payload_of_zero_octets_is_refused_rather_than_divided_by():
+    with pytest.raises(ValueError, match="does not tile"):
+        packets_per_line(_RGB8, 0)
+
+
+def test_a_byte_offset_inside_a_pgroup_floors_to_its_first_sample():
+    group_bytes, group_pixels = pgroup(_420_8)
+    inside = np.array([group_bytes + 1, 2 * group_bytes - 1])
+    assert sample_offset(_420_8, inside).tolist() == [group_pixels, group_pixels]
+
+
+def test_an_odd_420_row_floors_into_the_pair_above():
+    line = line_bytes(_420_8)
+    rows = np.array([2, 3])
+    assert raster_offset(_420_8, rows, np.zeros(2, dtype=np.int64)).tolist() == [
+        line,
+        line,
+    ]

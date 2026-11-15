@@ -391,3 +391,38 @@ def test_an_empty_chunk_takes_the_general_path(monkeypatch):
     watch_paths(monkeypatch, rtp)
     with pytest.raises(GeneralPathError):
         parse_rtp(np.zeros((0, 12), dtype=np.uint8))
+
+
+# Boundaries a mutation run found untested.
+
+
+def test_the_fast_path_reads_a_marker_beside_payload_type_zero():
+    # The marker tops the second octet, so payload type zero leaves it alone
+    # in the octet: exactly 0x80, the value a strict comparison would miss.
+    packets = chunk([0x80, 0x80, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3], stride=12)
+    parsed = parse_rtp(packets)
+    assert parsed.marker.tolist() == [True]
+    assert parsed.payload_type.tolist() == [0]
+
+
+def test_a_reported_size_is_clipped_to_the_stride_and_to_zero():
+    packets = chunk([0x80, 96, 0, 7, 0, 0, 0, 0, 0, 0, 0, 0], stride=16)
+    past_stride = parse_rtp(packets, np.array([64]))
+    assert past_stride.payload_offset.tolist() == [FIXED_HEADER_SIZE]
+    assert past_stride.sequence.tolist() == [7]
+    negative = parse_rtp(packets, np.array([-5]))
+    assert negative.payload_offset.tolist() == [0]
+    assert negative.version.tolist() == [0]
+
+
+def test_a_column_slice_of_a_wider_buffer_parses_as_its_copy():
+    wide = chunk(
+        [0x80, 0xE0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 9, 9, 9, 9],
+        [0x80, 0x60, 0, 2, 0, 0, 0, 2, 0, 0, 0, 3, 9, 9, 9, 9],
+        stride=24,
+    )
+    view = wide[:, :16]
+    assert not view.flags["C_CONTIGUOUS"]
+    sliced, copied = parse_rtp(view), parse_rtp(np.ascontiguousarray(view))
+    for name in ("marker", "payload_type", "sequence", "timestamp", "ssrc"):
+        assert getattr(sliced, name).tolist() == getattr(copied, name).tolist()
