@@ -170,6 +170,17 @@ Hypothesis generates. CI draws 100 examples a property; for a longer local
 search, run `HYPOTHESIS_PROFILE=thorough uv run pytest tests/test_properties.py`,
 which draws 10,000.
 
+On a pull request that changes `src/pyst2110/`, the advisory `mutation`
+workflow mutates the modules it touched, on the base branch and on the change,
+and lists in its job summary each mutant the change's tests let survive. To run
+the same report locally, across every module and every core:
+
+```bash
+uv run --group mutation python tools/mutation_report.py run \
+    _chunk division framing geometry payload redundancy rtp sdp timing transmit \
+    --out survivors.json
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The standards this implements are public and

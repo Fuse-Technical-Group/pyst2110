@@ -43,6 +43,9 @@ dev = [
     # the smallest that fails.
     "hypothesis>=6.140",
 ]
+# tools/mutation_report.py and the advisory mutation workflow. Its own group so
+# the quality gate's sync does not install it.
+mutation = ["mutmut==3.8.1"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyst2110"]
@@ -103,3 +106,8 @@ select = [
 include = ["src", "tests"]
 strict = ["src"]
 pythonVersion = "3.12"
+
+[tool.mutmut]
+# tools/mutation_report.py names the modules to mutate; this is where they are.
+source_paths = ["src/pyst2110/"]
+pytest_add_cli_args = ["-p", "no:cacheprovider", "-q"]

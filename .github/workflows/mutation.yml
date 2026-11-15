@@ -1,0 +1,115 @@
+name: mutation
+
+# Advisory: which mutants of the modules a pull request touched survive its
+# tests that did not survive the base branch's. Changes no test catches are
+# where a regression would pass CI. A full run over src/pyst2110 is minutes on
+# a large machine and far longer here, so this mutates only the changed
+# modules, on the base and on the change, and reports the difference
+# (tools/mutation_report.py).
+#
+# Not a required check: an equivalent mutation, one that cannot change what
+# the code does, survives every test by definition, so a hard gate would ask
+# for tests that cannot exist. The report goes to the job summary and a
+# warning on the run.
+on:
+  pull_request:
+    paths:
+      - "src/pyst2110/**.py"
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The base commit and the tags hatch-vcs derives a version from.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Modules this change touched
+        id: modules
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          modules=$(git diff --name-only --diff-filter=AM "$BASE_SHA" HEAD -- 'src/pyst2110/*.py' \
+            | sed -n 's#^src/pyst2110/\(.*\)\.py$#\1#p' | { grep -v '^__init__$' || true; } | tr '\n' ' ')
+          echo "modules=${modules% }" >> "$GITHUB_OUTPUT"
+          echo "touched: ${modules:-none}"
+
+      - name: Survivors on this change
+        if: steps.modules.outputs.modules != ''
+        env:
+          MODULES: ${{ steps.modules.outputs.modules }}
+        run: |
+          # shellcheck disable=SC2086 # one argument a module
+          uv run --group mutation python tools/mutation_report.py run $MODULES \
+            --out "$RUNNER_TEMP/head.json"
+
+      # The base branch may predate the script, the group or the config, so it
+      # runs with this change's script, at this change's mutmut pin, and gets
+      # this change's [tool.mutmut] table when it has none of its own.
+      - name: Survivors on the base branch
+        if: steps.modules.outputs.modules != ''
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MODULES: ${{ steps.modules.outputs.modules }}
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/base"
+          git worktree add --detach "$base" "$BASE_SHA"
+          python3 - "$base/pyproject.toml" <<'EOF'
+          import json, sys, tomllib
+          with open("pyproject.toml", "rb") as head:
+              table = tomllib.load(head)["tool"]["mutmut"]
+          with open(sys.argv[1], "rb") as base:
+              has_table = "mutmut" in tomllib.load(base).get("tool", {})
+          if not has_table:
+              with open(sys.argv[1], "a") as base:
+                  base.write("\n[tool.mutmut]\n")
+                  for key, value in table.items():
+                      base.write(f"{key} = {json.dumps(value)}\n")
+          EOF
+          pin=$(grep -o '"mutmut==[^"]*"' pyproject.toml | tr -d '"')
+          present=""
+          for module in $MODULES; do
+            if [ -f "$base/src/pyst2110/$module.py" ]; then
+              present="$present $module"
+            fi
+          done
+          if [ -z "$present" ]; then
+            echo '{"modules": [], "survivors": []}' > "$RUNNER_TEMP/base.json"
+            exit 0
+          fi
+          cd "$base"
+          # shellcheck disable=SC2086 # one argument a module
+          uv run --with "$pin" python "$GITHUB_WORKSPACE/tools/mutation_report.py" \
+            run $present --out "$RUNNER_TEMP/base.json"
+
+      - name: Report
+        if: steps.modules.outputs.modules != ''
+        run: |
+          set -euo pipefail
+          python3 tools/mutation_report.py compare \
+            "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/head.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          new=$(python3 -c '
+          import json, sys
+          base = {s["signature"] for s in json.load(open(sys.argv[1]))["survivors"]}
+          head = json.load(open(sys.argv[2]))["survivors"]
+          print(sum(s["signature"] not in base for s in head))
+          ' "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/head.json")
+          if [ "$new" -gt 0 ]; then
+            echo "::warning::$new new surviving mutants in the touched modules; see the job summary"
+          fi
