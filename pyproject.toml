@@ -39,6 +39,9 @@ dev = [
     # py.typed promises downstream consumers type information; this checks
     # it. Pinned to the version bug-free-happiness's workflow runs in CI.
     "pyright==1.1.414",
+    # Property tests (tests/test_properties.py): generated inputs, shrunk to
+    # the smallest that fails.
+    "hypothesis>=6.140",
 ]
 
 [tool.hatch.build.targets.wheel]
