@@ -36,8 +36,9 @@ dev = [
     # Pinned, not floored: a newer ruff than CI runs is precisely the
     # disagreement a pin exists to prevent.
     "ruff==0.17.4",
-    # py.typed promises downstream consumers type information; this checks it.
-    "mypy>=1.13",
+    # py.typed promises downstream consumers type information; this checks
+    # it. Pinned to the version bug-free-happiness's workflow runs in CI.
+    "pyright==1.1.414",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -92,7 +93,10 @@ select = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]  # assert is what pytest is made of
 
-[tool.mypy]
-python_version = "3.12"
-strict = true
-files = ["src/pyst2110"]
+[tool.pyright]
+# The library is checked strictly, as it was under mypy --strict; the tests
+# in standard mode, so they may still pass deliberately wrong types to the
+# validation they exercise.
+include = ["src", "tests"]
+strict = ["src"]
+pythonVersion = "3.12"

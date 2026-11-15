@@ -103,7 +103,7 @@ def read_u16(
     inside = (offsets >= 0) & (offsets + _U16_SIZE <= bounds)
     index = np.where(inside, offsets, 0).clip(0, packets.shape[1] - _U16_SIZE)
     if rows is None:
-        rows = np.arange(packets.shape[0])
+        rows = np.arange(packets.shape[0], dtype=np.int64)
     high = packets[rows, index].astype(np.int64)
     low = packets[rows, index + 1].astype(np.int64)
     return np.where(inside, (high << 8) | low, 0).astype(np.int64), inside

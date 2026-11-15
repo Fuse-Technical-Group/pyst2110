@@ -274,7 +274,8 @@ def test_a_view_narrower_than_the_fixed_header_is_refused():
 def test_a_non_byte_array_is_refused():
     """The interface is a byte view; a wider dtype would silently misalign."""
     with pytest.raises(ValueError, match="uint8"):
-        parse_rtp(np.zeros((4, 12), dtype=np.uint16))
+        # The wrong dtype is the case under test.
+        parse_rtp(np.zeros((4, 12), dtype=np.uint16))  # pyright: ignore[reportArgumentType]
 
 
 def test_sizes_must_match_the_packet_count():

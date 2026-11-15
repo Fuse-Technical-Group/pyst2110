@@ -69,24 +69,12 @@ jobs:
         with:
           globs: "*.md"
 
-  # One job on a bare runner: ruff, mypy and pytest.
-  gate:
+  # ruff, pyright, plus one test run through bug-free-happiness's shared
+  # Python workflow, which pins the lint and type-check tools centrally.
+  python:
     needs: classify
     if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      # SHA-pinned per the convention the flywheel workflows set; the trailing
-      # # vX.Y.Z comment is mandatory for human review.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          enable-cache: true
-          prune-cache: true
-
-      # uv reads .python-version and fetches the interpreter itself.
-      # tools/ci.sh is the same entry point developers run locally.
-      - run: bash tools/ci.sh
+    uses: repentsinner/bug-free-happiness/.github/workflows/python-correctness.yml@d55f28fb964df6437c327ce4fa5892e686c001e2 # v0.6.0
 
   shellcheck:
     needs: classify
@@ -149,7 +137,7 @@ jobs:
 
   quality-correctness:
     name: quality / correctness
-    needs: [classify, gate, shellcheck, actionlint]
+    needs: [classify, python, shellcheck, actionlint]
     if: always()
     runs-on: ubuntu-latest
     steps:

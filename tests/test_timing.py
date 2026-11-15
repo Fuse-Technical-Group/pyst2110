@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from fractions import Fraction
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -413,7 +413,9 @@ def test_the_two_drain_origins_the_field_uses():
 
 
 @pytest.mark.parametrize("origin", ["epoch", "first"])
-def test_c_inst_agrees_with_the_per_packet_reference(origin: str):
+def test_c_inst_agrees_with_the_per_packet_reference(
+    origin: Literal["epoch", "first"],
+):
     rng = np.random.default_rng(2110)
     limits = sender_limits(video(), _N_1080)
     base = 1_700_000_000 * _GIGA

@@ -56,11 +56,11 @@ _420_ROWS = 2
 
 # Which table a sampling reads from, so a sampling and a depth are looked up
 # in that order — the depths a sampling covers are its own.
-_FAMILY: dict[str, dict[int, tuple[int, int]]] = (
-    dict.fromkeys(_444_SAMPLINGS, _444_PGROUPS)
-    | dict.fromkeys(_422_SAMPLINGS, _422_PGROUPS)
-    | dict.fromkeys(_420_SAMPLINGS, _420_PGROUPS)
-)
+_FAMILY: dict[str, dict[int, tuple[int, int]]] = {
+    **dict.fromkeys(_444_SAMPLINGS, _444_PGROUPS),
+    **dict.fromkeys(_422_SAMPLINGS, _422_PGROUPS),
+    **dict.fromkeys(_420_SAMPLINGS, _420_PGROUPS),
+}
 # XYZ is 4:4:4-shaped, but ST 2110-20 Table 1 lists it only at 12 and 16 bits.
 _FAMILY["XYZ"] = {depth: _444_PGROUPS[depth] for depth in (12, 16)}
 
