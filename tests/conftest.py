@@ -7,7 +7,17 @@ is tested against a writer of ours (§spec:testing).
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
+from hypothesis import settings
+
+# Hypothesis profiles for tests/test_properties.py. The default keeps CI
+# within a second; HYPOTHESIS_PROFILE=thorough draws a hundred times as many
+# examples, for a local search before a release or after a parser change.
+settings.register_profile("default", max_examples=100)
+settings.register_profile("thorough", max_examples=10_000, deadline=None)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 def chunk(*packets: list[int], stride: int = 0) -> np.ndarray:

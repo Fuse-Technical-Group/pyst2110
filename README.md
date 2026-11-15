@@ -165,6 +165,11 @@ bash tools/ci.sh
 
 `tools/ci.sh` runs the checks CI runs — ruff, pyright, pytest.
 
+`tests/test_properties.py` checks the parsers and round trips on inputs
+Hypothesis generates. CI draws 100 examples a property; for a longer local
+search, run `HYPOTHESIS_PROFILE=thorough uv run pytest tests/test_properties.py`,
+which draws 10,000.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). The standards this implements are public and
