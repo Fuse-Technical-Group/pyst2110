@@ -786,3 +786,95 @@ def test_the_declared_limits_ride_along_for_the_report():
     result = measure(video(), _N_1080, times, marker, previous_marker=True)
     assert result.limits == sender_limits(video(), _N_1080)
     assert isinstance(result.limits, Limits)
+
+
+# Boundaries a mutation run found untested: each test fails when the
+# comparison or carried value it names is changed.
+
+_P50 = SdpVideo(
+    width=1920, height=1080, frame_rate=Fraction(50), depth=10, sampling="YCbCr-4:2:2"
+)
+_FRAME_US = 20_000
+
+
+def test_a_tr_offset_of_zero_is_inside_the_frame_and_one_frame_is_not():
+    assert read_schedule(_P50, _N_1080, tr_offset_us=0).tr_offset == 0
+    read_schedule(_P50, _N_1080, tr_offset_us=_FRAME_US - 1)
+    with pytest.raises(ValueError, match="TR_OFFSET"):
+        read_schedule(_P50, _N_1080, tr_offset_us=_FRAME_US)
+
+
+def test_a_linear_schedule_is_active_for_the_whole_frame():
+    schedule = read_schedule(_P50, _N_1080, sender_type=SENDER_TYPE_NARROW_LINEAR)
+    assert schedule.r_active == 1
+    assert schedule.t_rs == schedule.t_frame / _N_1080
+
+
+def test_a_frame_of_no_packets_is_refused_and_of_one_is_not():
+    with pytest.raises(ValueError, match="0 packets"):
+        read_schedule(_P50, 0)
+    assert read_schedule(_P50, 1).n_packets == 1
+
+
+def test_vrx_full_floors_the_octet_term_at_a_jumbo_maxudp():
+    # 1500 x 720 octets over a MAXUDP of 8960 is 120.5 packets.
+    limits = sender_limits(
+        replace(_P50, max_udp=8960), 100, sender_type=SENDER_TYPE_WIDE
+    )
+    assert limits.vrx_full == 120
+    assert isinstance(limits.vrx_full, int)
+
+
+def test_a_wide_sender_at_the_packet_rate_bound_has_no_cmax():
+    # Section 7.1.4 bounds CMAX only below 900,000 packets a second.
+    at_bound = sender_limits(_P50, 18_000, sender_type=SENDER_TYPE_WIDE)
+    below = sender_limits(_P50, 17_999, sender_type=SENDER_TYPE_WIDE)
+    assert at_bound.cmax is None
+    assert below.cmax is not None
+
+
+def test_read_times_refuses_an_index_one_past_the_frame():
+    schedule = read_schedule(_P50, _N_1080)
+    read_times(schedule, 0, np.array([0, _N_1080 - 1]))
+    with pytest.raises(ValueError, match="names no"):
+        read_times(schedule, 0, np.array([0, _N_1080]))
+
+
+def test_one_packet_fills_each_bucket_by_one():
+    schedule = read_schedule(_P50, _N_1080)
+    times = read_times(schedule, 0, np.array([0]))
+    limits = sender_limits(_P50, _N_1080)
+    assert c_inst(times, limits.t_drain).tolist() == [1]
+    assert c_inst(times[:0], limits.t_drain).size == 0
+    buffer = vrx(schedule, times, np.array([True]))
+    assert buffer.per_packet.size == 1
+    empty = vrx(schedule, times[:0], np.array([], dtype=np.bool_))
+    assert empty.per_packet.size == 0
+    assert empty.datum_delta_ns.size == 0
+
+
+def _ideal_capture(video: SdpVideo, n_packets: int) -> tuple[Any, Any]:
+    schedule = read_schedule(video, n_packets)
+    times = np.concatenate(
+        [read_times(schedule, frame, np.arange(n_packets)) for frame in (0, 1)]
+    )
+    marker = np.zeros(times.size, dtype=np.bool_)
+    marker[n_packets - 1 :: n_packets] = True
+    return times, marker
+
+
+def test_measure_judges_against_the_sender_type_and_offset_it_is_given():
+    times, marker = _ideal_capture(_P50, _N_1080)
+    judged = measure(
+        _P50,
+        _N_1080,
+        times,
+        marker,
+        sender_type=SENDER_TYPE_WIDE,
+        previous_marker=True,
+    )
+    assert judged.limits.sender_type == SENDER_TYPE_WIDE
+    with pytest.raises(ValueError, match="TR_OFFSET"):
+        measure(
+            _P50, _N_1080, times, marker, tr_offset_us=_FRAME_US, previous_marker=True
+        )

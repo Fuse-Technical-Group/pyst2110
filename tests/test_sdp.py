@@ -10,6 +10,7 @@ documents (§spec:testing).
 from __future__ import annotations
 
 import warnings
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any
 
@@ -21,6 +22,7 @@ from pyst2110.sdp import (
     RANGE_FULLPROTECT,
     RANGE_NARROW,
     RANGES,
+    SENDER_TYPE_WIDE,
     SdpConformanceWarning,
     SdpFlow,
     SdpVideo,
@@ -29,6 +31,7 @@ from pyst2110.sdp import (
     parse_dup_sdp,
     parse_sdp,
     parse_video_format,
+    validate_frame_rate,
 )
 
 _ST2110_20 = """\
@@ -1295,3 +1298,77 @@ def test_an_interlaced_420_offer_is_not_written(sampling: str):
 def test_interlace_beside_any_other_sampling_is_still_carried():
     described = video(sampling="YCbCr-4:2:2", interlaced=True)
     assert parse_video_format(format_sdp(_FLOW, described)) == described
+
+
+# Boundaries a mutation run found untested: each test fails when the
+# comparison, split or default it names is changed.
+
+
+def test_a_connection_address_with_a_ttl_and_a_count_keeps_only_the_address():
+    flow = parse_sdp("m=video 5004 RTP/AVP 96\nc=IN IP4 239.0.0.1/32/3\n")
+    assert flow.destination_ip == "239.0.0.1"
+
+
+def test_a_media_port_with_a_count_keeps_only_the_port():
+    flow = parse_sdp("m=video 5004/2 RTP/AVP 96\nc=IN IP4 239.0.0.1\n")
+    assert flow.destination_port == 5004
+
+
+def test_a_media_line_without_a_port_is_refused():
+    with pytest.raises(ValueError, match="port 0"):
+        parse_sdp("m=video\nc=IN IP4 239.0.0.1\n")
+
+
+def test_an_ipv6_source_filter_keeps_the_whole_source_address():
+    flow = parse_sdp(
+        "m=video 5004 RTP/AVP 96\nc=IN IP6 ff0e::1\n"
+        "a=source-filter: incl IN IP6 ff0e::1 2001:db8::2\n"
+    )
+    assert flow.source_ip == "2001:db8::2"
+
+
+def test_an_ipv6_offer_with_no_source_names_the_unspecified_host():
+    text = format_sdp(SdpFlow("ff0e::1", 5004), _VIDEO, any_source=True)
+    assert "IN IP6 ::\r\n" in text
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"width": 1, "height": 1},
+        {"max_udp": 1},
+        {"cmax": 1},
+        {"tr_offset_us": 0},
+    ],
+)
+def test_the_smallest_value_each_field_admits_is_offered_and_read_back(
+    overrides: dict[str, Any],
+):
+    offered = video(**overrides)
+    assert parse_video_format(format_sdp(_FLOW, offered)) == offered
+
+
+def test_the_smallest_port_ttl_and_payload_type_are_offered():
+    text = format_sdp(
+        SdpFlow("239.0.0.1", 1), _VIDEO, ttl=0, payload_type=0, any_source=True
+    )
+    assert "m=video 1 RTP/AVP 0\r\n" in text
+    assert "c=IN IP4 239.0.0.1/0\r\n" in text
+
+
+def test_troff_reaches_the_last_whole_microsecond_inside_the_frame():
+    # A 50 Hz frame is 20,000 us long, so 19,999 is the last TROFF inside it.
+    rate = video(frame_rate=Fraction(50))
+    last = replace(rate, tr_offset_us=19_999)
+    assert parse_video_format(format_sdp(_FLOW, last)) == last
+    with pytest.raises(ValueError, match="TROFF"):
+        format_sdp(_FLOW, replace(rate, tr_offset_us=20_000))
+
+
+def test_a_rate_below_one_frame_a_second_is_a_rate():
+    validate_frame_rate(Fraction(1, 2))
+
+
+def test_a_dup_offer_carries_the_sender_type_it_is_given():
+    text = format_dup_sdp(_FLOW, _SECOND_LEG, _VIDEO, sender_type=SENDER_TYPE_WIDE)
+    assert text.count("TP=2110TPW") == 2

@@ -442,3 +442,40 @@ def test_an_interlaced_420_constituent_is_refused_citing_the_sampling():
     )
     with pytest.raises(ValueError, match=r"6\.2\.5"):
         parse_group_sdp(text)
+
+
+# Boundaries a mutation run found untested.
+
+
+def test_a_division_group_beside_a_dup_group_is_refused():
+    text = _annex("MULTI-2SI", 4).replace(
+        "a=group:MULTI-2SI", "a=group:DUP 1 2\na=group:MULTI-2SI"
+    )
+    with pytest.raises(ValueError, match="primary and a secondary"):
+        parse_group_sdp(text)
+
+
+def test_two_division_groups_are_refused():
+    text = _annex("MULTI-2SI", 4).replace(
+        "a=group:MULTI-2SI 1 2 3 4",
+        "a=group:MULTI-2SI 1 2 3 4\na=group:MULTI-SD 1 2 3 4",
+    )
+    with pytest.raises(ValueError, match="primary and a secondary"):
+        parse_group_sdp(text)
+
+
+def test_constituents_agreeing_on_a_non_default_tcs_draw_no_warning():
+    text = _annex("MULTI-2SI", 4).replace("TCS=SDR", "TCS=PQ")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SdpConformanceWarning)
+        parse_group_sdp(text)
+
+
+def test_a_group_offer_carries_the_sender_type_and_any_source_it_is_given():
+    sourceless = tuple(SdpFlow(flow.destination_ip, 20000) for flow in _FLOWS)
+    text = format_group_sdp(
+        sourceless, _SUB_IMAGE, sender_type="2110TPW", any_source=True
+    )
+    assert text.count("TP=2110TPW") == len(_FLOWS)
+    with pytest.raises(ValueError, match="names no sender"):
+        format_group_sdp(sourceless, _SUB_IMAGE)

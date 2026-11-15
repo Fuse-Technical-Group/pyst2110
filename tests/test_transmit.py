@@ -11,6 +11,7 @@ octet of every packet can be worked out on paper.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any
 
@@ -462,3 +463,56 @@ def test_an_interlaced_420_frame_is_refused():
         FrameHeaders(
             video(sampling="YCbCr-4:2:0", depth=8, height=4, interlaced=True), 6
         )
+
+
+# Boundaries a mutation run found untested.
+
+_SMALL = SdpVideo(
+    width=4, height=2, frame_rate=Fraction(50), depth=8, sampling="YCbCr-4:2:2"
+)
+_HEADERS = UDP_HEADER_SIZE + PACKET_HEADER_SIZE
+
+
+def test_a_udp_limit_of_exactly_the_headers_leaves_no_payload():
+    with pytest.raises(ValueError, match="leaves no room"):
+        max_payload_size(replace(_SMALL, max_udp=_HEADERS))
+    assert max_payload_size(replace(_SMALL, max_udp=_HEADERS + 1)) == 1
+
+
+def test_a_payload_of_exactly_the_udp_limit_is_accepted():
+    # Eight octets is one 4:2:2 line of four pixels.
+    FrameHeaders(replace(_SMALL, max_udp=_HEADERS + 8), 8)
+    with pytest.raises(ValueError, match="past the"):
+        FrameHeaders(replace(_SMALL, max_udp=_HEADERS + 7), 8)
+
+
+def test_a_raster_at_the_row_and_width_limits_is_accepted():
+    limit = (1 << 15) - 1
+    FrameHeaders(replace(_SMALL, width=2, height=limit), 4)
+    wide = replace(_SMALL, width=limit - 1, height=1)
+    FrameHeaders(wide, choose_payload_size(wide, max_payload_size(wide)))
+
+
+def test_the_ssrc_defaults_to_zero():
+    block = FrameHeaders(_SMALL, 8).stamp(0)
+    assert block[:, 8:12].tolist() == [[0, 0, 0, 0]] * block.shape[0]
+
+
+def test_an_interlaced_second_field_takes_the_floored_half_frame_timestamp():
+    headers = FrameHeaders(
+        replace(_SMALL, frame_rate=Fraction(30000, 1001), interlaced=True), 8
+    )
+    # Half of a 29.97 frame is 1501.5 ticks of the 90 kHz clock.
+    assert headers.timestamp(0, 1) == 1501
+    assert headers.timestamp(1) == 3003
+
+
+def test_the_width_and_srd_length_limits_themselves_are_accepted():
+    # RGB 8-bit is one pixel a pgroup, so a width can be odd and a line can
+    # be any multiple of three octets.
+    rgb = SdpVideo(width=1, height=1, frame_rate=Fraction(50), depth=8, sampling="RGB")
+    widest = replace(rgb, width=(1 << 15) - 1)
+    FrameHeaders(widest, choose_payload_size(widest, max_payload_size(widest)))
+    srd_limit = (1 << 16) - 1
+    longest = replace(rgb, width=srd_limit // 3, max_udp=srd_limit + _HEADERS)
+    FrameHeaders(longest, srd_limit)

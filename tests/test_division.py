@@ -412,3 +412,18 @@ def test_four_way_square_division_follows_st_435_1_figure_5(width, corner, const
     assert (number == constituent).all()
     assert x.tolist() == [0, half - 1, 0, half - 1]
     assert y.tolist() == [0, 0, 1079, 1079]
+
+
+# Boundaries a mutation run found untested.
+
+
+@pytest.mark.parametrize(("width", "height"), [(0, 8), (8, 0)])
+def test_an_empty_raster_axis_is_refused(width: int, height: int):
+    with pytest.raises(ValueError, match="cannot divide"):
+        sub_image_size(width, height, division=MULTI_SD, count=4)
+
+
+def test_multi_sd_cuts_a_width_of_two_pixels_a_column():
+    # Square division halves each axis; MULTI-2SI needs its pixel pairs of
+    # pairs, MULTI-SD only an even width.
+    assert sub_image_size(6, 4, division=MULTI_SD, count=4) == (3, 2)

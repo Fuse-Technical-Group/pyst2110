@@ -443,3 +443,85 @@ def test_one_broken_step_takes_the_general_walk_and_still_counts():
     assert tracker.discontinuities == 1
     assert tracker.lost == 5
     assert tracker.expected == 200
+
+
+# Boundaries a mutation run found untested: each test below fails when the
+# comparison, count or carried state it names is changed.
+
+
+def test_a_chunk_of_one_packet_starts_a_frame_after_a_marked_one():
+    assert frame_starts(np.array([False]), previous=True).tolist() == [True]
+
+
+def test_the_previous_marker_starts_the_first_packet_of_a_chunk():
+    marker = np.array([False, False, True])
+    assert frame_starts(marker, previous=True).tolist() == [True, False, False]
+    assert frame_starts(marker, previous=False).tolist() == [False, False, False]
+
+
+def test_an_empty_chunk_starts_nothing():
+    assert frame_starts(np.array([], dtype=np.bool_), previous=True).size == 0
+
+
+def test_the_tracker_carries_the_last_marker_of_a_chunk_not_an_earlier_one():
+    tracker = FrameTracker()
+    tracker.observe(np.array([False, True, False]))
+    # The chunk ended unmarked, so a marker opening the next one is an edge.
+    index = tracker.observe(np.array([True, False]))
+    assert tracker.frames == 2
+    assert index.tolist() == [1, 2]
+
+
+def test_every_counter_accumulates_across_chunks():
+    tracker = SequenceTracker()
+    # The second chunk opens one past the first's last number, so the only
+    # discontinuities are the duplicate, reordering and resync in each.
+    for base in (0, 5_001):
+        tracker.observe(
+            np.array([base, base + 1, base + 1, base + 3, base + 2, base + 5_000])
+        )
+    assert tracker.duplicated == 2
+    assert tracker.reordered == 2
+    assert tracker.resyncs == 2
+    assert tracker.discontinuities == 2 * 4
+
+
+def test_a_duplicate_is_a_step_of_zero_and_only_that():
+    tracker = SequenceTracker()
+    tracker.observe(np.array([1, 2, 2, 4, 5]))
+    assert tracker.duplicated == 1
+    assert tracker.lost == 0
+
+
+def test_stepping_back_by_the_misorder_bound_is_a_reordering():
+    tracker = SequenceTracker()
+    tracker.observe(np.array([1_000, 900]))
+    assert tracker.reordered == 1
+    assert tracker.resyncs == 0
+
+
+def test_a_step_of_the_dropout_bound_is_a_resync_and_one_short_is_loss():
+    at_bound = SequenceTracker()
+    at_bound.observe(np.array([0, 3_000]))
+    assert at_bound.resyncs == 1
+    assert at_bound.lost == 0
+
+    short = SequenceTracker()
+    short.observe(np.array([0, 2_999]))
+    assert short.resyncs == 0
+    assert short.lost == 2_998
+
+
+def test_each_resync_banks_the_span_before_it():
+    tracker = SequenceTracker()
+    tracker.observe(np.array([0, 1, 2, 10_000, 10_001, 20_000, 20_001, 20_002]))
+    assert tracker.resyncs == 2
+    assert tracker.expected == 3 + 2 + 3
+    assert tracker.lost == 0
+
+
+def test_a_marked_first_packet_after_a_marked_one_is_no_new_edge():
+    # Without the previous marker the first packet's marker would read as an
+    # edge, and the second packet as a frame start.
+    marker = np.array([True, False])
+    assert frame_starts(marker, previous=True).tolist() == [True, False]
