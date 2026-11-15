@@ -16,3 +16,6 @@ dist/
 
 # Local copies of the standards (pub.smpte.org/doc/); not redistributed
 vendor/
+
+# mutmut's working copy (tools/mutation_report.py).
+mutants/
