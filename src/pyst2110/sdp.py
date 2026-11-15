@@ -442,7 +442,7 @@ def parse_group_sdp(text: str) -> SdpGroup:
     )
     _check_constituent_flows(flows, tags)
 
-    formats = []
+    formats: list[tuple[SdpVideo, dict[str, str]]] = []
     for section, tag in zip(sections, tags, strict=True):
         try:
             formats.append(_video_format(list(section.lines), stacklevel=4))
@@ -565,7 +565,7 @@ def _label(name: str) -> str:
 def _division_groups(session: list[str]) -> list[tuple[str, tuple[str, ...]]]:
     """Every session-level ``a=group:`` carrying one of RP 2110-23's
     semantics, as its semantics and tags, in document order."""
-    groups = []
+    groups: list[tuple[str, tuple[str, ...]]] = []
     for line in session:
         if not line.startswith("a=group:"):
             continue
@@ -774,7 +774,7 @@ def parse_video_format(text: str) -> SdpVideo:
     # The first video section's: a multi-essence SDP carries an a=fmtp: per
     # essence, and reading the audio one would describe a frame geometry that
     # does not exist.
-    block = next((block for block in media if _is_video(block[0])), [])
+    block = next((block for block in media if _is_video(block[0])), list[str]())
     # Past _video_format and _require_raw, to the caller's line.
     return _video_format(block, stacklevel=4)[0]
 

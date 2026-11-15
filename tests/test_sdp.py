@@ -591,12 +591,11 @@ def test_a_session_id_makes_the_origin_unique_when_a_caller_needs_it():
     ],
 )
 def test_an_address_that_is_not_one_is_refused(field: str, value: str):
-    flow = SdpFlow(
-        **(
-            {"destination_ip": "239.100.0.1", "destination_port": 20000}
-            | {field: value}
-        )
-    )
+    fields: dict[str, Any] = {
+        "destination_ip": "239.100.0.1",
+        "destination_port": 20000,
+    } | {field: value}
+    flow = SdpFlow(**fields)
     with pytest.raises(ValueError, match="IP address"):
         format_sdp(flow, _VIDEO)
 
@@ -652,12 +651,11 @@ def test_an_address_carrying_a_scope_identifier_is_refused(field: str, value: st
     genuine CRLFs — past a strict RFC 4566 reader, not merely past a line
     split. A scope names a local interface and has no meaning in an offer.
     """
-    flow = SdpFlow(
-        **(
-            {"destination_ip": "239.100.0.1", "destination_port": 20000}
-            | {field: value}
-        )
-    )
+    fields: dict[str, Any] = {
+        "destination_ip": "239.100.0.1",
+        "destination_port": 20000,
+    } | {field: value}
+    flow = SdpFlow(**fields)
     with pytest.raises(ValueError, match="scope"):
         format_sdp(flow, _VIDEO)
 
@@ -731,7 +729,8 @@ def test_a_session_id_that_is_not_a_whole_number_is_refused(session_id: object):
     o= and a c= near the top of the document; a negative writes a malformed
     origin with no error at all."""
     with pytest.raises(ValueError, match="session id"):
-        format_sdp(_FLOW, _VIDEO, session_id=session_id)
+        # The wrong type is the case under test.
+        format_sdp(_FLOW, _VIDEO, session_id=session_id)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize("sampling", ["", "YCbCr 4:2:2"])

@@ -163,7 +163,7 @@ uv sync
 bash tools/ci.sh
 ```
 
-`tools/ci.sh` is the gate CI runs — ruff, mypy, pytest.
+`tools/ci.sh` runs the checks CI runs — ruff, pyright, pytest.
 
 ## License
 

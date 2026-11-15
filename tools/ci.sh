@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# The gate CI runs, and the one to run before pushing. Everything here works
-# on a bare machine: no NIC, no licence, no SDK (SPEC §spec:testing).
+# The checks CI runs, and the script to run before pushing. Everything here
+# works on a bare machine: no NIC, no licence, no SDK (SPEC §spec:testing).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -18,7 +18,7 @@ run "ruff check" uv run ruff check
 run "ruff format --check" uv run ruff format --check
 
 bold "types"
-run "mypy" uv run mypy
+run "pyright" uv run pyright
 
 bold "tests"
 run "pytest" uv run pytest -q
