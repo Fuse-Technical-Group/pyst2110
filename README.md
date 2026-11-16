@@ -159,11 +159,10 @@ that judge a capture's emission instants. What is not built is listed in
 ## Development
 
 ```bash
-uv sync
-bash tools/ci.sh
+uvx --from "git+https://github.com/repentsinner/bug-free-happiness@v0.10.0#subdirectory=.github/tools/python" bfh-check
 ```
 
-`tools/ci.sh` runs the checks CI runs — ruff, pyright, pytest.
+`bfh-check` runs the checks CI runs, at CI's tool versions: `uv sync --locked`, ruff's lint and format checks, pyright, and pytest. Its release is the one `.github/workflows/quality.yml` pins.
 
 `tests/test_properties.py` checks the parsers and round trips on inputs
 Hypothesis generates. CI draws 100 examples a property; for a longer local
