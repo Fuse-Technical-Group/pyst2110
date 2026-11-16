@@ -74,7 +74,7 @@ jobs:
   python:
     needs: classify
     if: needs.classify.outputs.derived_release_commit != 'true' && needs.classify.outputs.promotion_pr != 'true'
-    uses: repentsinner/bug-free-happiness/.github/workflows/python-correctness.yml@d55f28fb964df6437c327ce4fa5892e686c001e2 # v0.6.0
+    uses: repentsinner/bug-free-happiness/.github/workflows/python-correctness.yml@659ecd9856a48c48f886ff06e5fd86911bb8003a # v0.10.0
 
   shellcheck:
     needs: classify

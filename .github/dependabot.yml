@@ -10,14 +10,9 @@ updates:
     # A release has a week to draw a follow-up fix before it is proposed.
     cooldown:
       default-days: 7
-    # ruff and pyright bring new findings that need code edits, so they
-    # land apart from the library bumps.
     groups:
-      python-lint:
-        patterns: ["ruff", "pyright"]
       uv-minor-patch:
         patterns: ["*"]
-        exclude-patterns: ["ruff", "pyright"]
         update-types: [minor, patch]
     # `chore(deps):` is one of flywheel's auto_merge types (.flywheel.yml), so
     # a bump lands once the required checks pass: quality / correctness is

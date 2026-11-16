@@ -33,12 +33,6 @@ Repository = "https://github.com/Fuse-Technical-Group/pyst2110"
 [dependency-groups]
 dev = [
     "pytest>=8",
-    # Pinned, not floored: a newer ruff than CI runs is precisely the
-    # disagreement a pin exists to prevent.
-    "ruff==0.17.4",
-    # py.typed promises downstream consumers type information; this checks
-    # it. Pinned to the version bug-free-happiness's workflow runs in CI.
-    "pyright==1.1.414",
     # Property tests (tests/test_properties.py): generated inputs, shrunk to
     # the smallest that fails.
     "hypothesis>=6.140",
